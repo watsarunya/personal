@@ -6,7 +6,7 @@ import {
   CheckCircle2, ChevronLeft, ChevronRight, Flame, Star, Landmark,
   Lock, Award, ShieldCheck, Rocket, PartyPopper, ChevronRight as ChevronR,
   ClipboardList, Settings, RotateCcw, Percent, ChevronDown, ChevronUp, Info, X,
-  Clock, Repeat, Tag, PieChart as PieChartIcon
+  Clock, Repeat, Tag, PieChart as PieChartIcon, Store, Bike, Package, Pencil
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer
@@ -47,11 +47,13 @@ const FONT_IMPORT = `
 const CAT_COLOR = {
   food: C.coral, drink: C.blue, car: C.purple, beauty: C.pink,
   home: C.yellowDeep, cat: "#9B7BF0", exercise: C.teal, others: C.gray,
+  seven11: C.brown, grab: "#1DB954", lineman: "#5B6BC0", creditcard: "#6B4EA6",
   salary: C.teal, extra: C.blue, other_income: C.gray,
 };
 const CAT_SOFT = {
   food: C.coralSoft, drink: C.blueSoft, car: C.purpleSoft, beauty: C.pinkSoft,
   home: C.yellowSoft, cat: "#EEE6FF", exercise: C.tealSoft, others: C.graySoft,
+  seven11: C.brownSoft, grab: "#DBF5E5", lineman: "#E5E7F7", creditcard: "#EAE3F5",
   salary: C.tealSoft, extra: C.blueSoft, other_income: C.graySoft,
 };
 
@@ -63,6 +65,10 @@ const EXPENSE_CATEGORIES = [
   { key: "home", label: "บ้าน", icon: Home },
   { key: "cat", label: "แมว", icon: Cat },
   { key: "exercise", label: "ออกกำลังกาย", icon: Dumbbell },
+  { key: "seven11", label: "7-Eleven", icon: Store },
+  { key: "grab", label: "Grab", icon: Bike },
+  { key: "lineman", label: "Lineman", icon: Package },
+  { key: "creditcard", label: "Credit Card", icon: CreditCard },
   { key: "others", label: "อื่นๆ", icon: MoreHorizontal },
 ];
 const INCOME_CATEGORIES = [
@@ -70,7 +76,7 @@ const INCOME_CATEGORIES = [
   { key: "extra", label: "รายได้เสริม", icon: TrendingUp },
   { key: "other_income", label: "อื่นๆ", icon: MoreHorizontal },
 ];
-const CREDIT_CARDS = ["SCB", "JCB", "Premier", "Preferred", "Kbank", "Krungsri"];
+const CREDIT_CARDS = ["SCB", "JCB", "Shopee", "Krungsri", "Kbank", "Premier", "Prefered"];
 
 const TAB_COLOR = {
   overview: C.purple, transactions: C.coral, savings: C.teal,
@@ -95,7 +101,10 @@ function investItemStatus(item) {
   return { level: "ok", text: `อีก ${diff} วัน` };
 }
 
-function ymOf(d) { return d.toISOString().slice(0, 7); }
+function pad2(n) { return String(n).padStart(2, "0"); }
+function toLocalDateStr(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+function parseLocalDate(s) { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); }
+function ymOf(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1); }
 function monthLabel(ym) {
   const [y, m] = ym.split("-").map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString("th-TH", { month: "long", year: "numeric" });
@@ -156,29 +165,29 @@ function fmtTHB(n) {
   const v = Number(n) || 0;
   return "฿" + v.toLocaleString("th-TH", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
-function todayStr() { return new Date().toISOString().slice(0, 10); }
+function todayStr() { return toLocalDateStr(new Date()); }
 function thDate(d) {
-  try { return new Date(d).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }); }
+  try { return parseLocalDate(d).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }); }
   catch { return d; }
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function catMeta(list, key) { return list.find((c) => c.key === key) || list[list.length - 1]; }
 function daysUntil(dateStr) {
   const now = new Date(); now.setHours(0, 0, 0, 0);
-  const d = new Date(dateStr); d.setHours(0, 0, 0, 0);
+  const d = parseLocalDate(dateStr);
   return Math.round((d - now) / 86400000);
 }
 function computeStreak(transactions) {
   if (transactions.length === 0) return 0;
   const days = [...new Set(transactions.map((t) => t.date))].sort().reverse();
   const today = todayStr();
-  const yest = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const yest = toLocalDateStr(new Date(Date.now() - 86400000));
   if (days[0] !== today && days[0] !== yest) return 0;
   let streak = 1;
-  let cursor = new Date(days[0]);
+  let cursor = parseLocalDate(days[0]);
   for (let i = 1; i < days.length; i++) {
     cursor.setDate(cursor.getDate() - 1);
-    const expected = cursor.toISOString().slice(0, 10);
+    const expected = toLocalDateStr(cursor);
     if (days[i] === expected) streak++; else break;
   }
   return streak;
@@ -201,15 +210,16 @@ export default function FinanceTracker() {
     saving: { mode: "percent", value: 10 },
     invest: { mode: "percent", value: 10 },
   });
-  const [cardDueDay, setCardDueDay] = useState(
-    Object.fromEntries(CREDIT_CARDS.map((c) => [c, 5]))
+  const [cardSettings, setCardSettings] = useState(
+    Object.fromEntries(CREDIT_CARDS.map((c) => [c, { cutoffDay: 25, dueDay: 5 }]))
   );
   const [investPlan, setInvestPlan] = useState({ totalPool: 0, items: [] });
   const [holdings, setHoldings] = useState([]);
   const [homeLoan, setHomeLoan] = useState({
     active: false, name: "", principal: 0, startMonth: ymOf(new Date()),
-    payment: 0, dueDay: 5, rateChanges: [],
+    payment: 0, dueDay: 5, rateChanges: [], paidMonths: {},
   });
+  const [dismissedAlerts, setDismissedAlerts] = useState({});
   const [ready, setReady] = useState(false);
   const loadedRef = useRef(false);
 
@@ -227,10 +237,22 @@ export default function FinanceTracker() {
           setPlanFixCostItems(data.planFixCostItems || []);
           setPlanOverrides(data.planOverrides || {});
           if (data.savingsPlan) setSavingsPlan(data.savingsPlan);
-          if (data.cardDueDay) setCardDueDay((prev) => ({ ...prev, ...data.cardDueDay }));
+          if (data.cardSettings) {
+            setCardSettings((prev) => ({ ...prev, ...data.cardSettings }));
+          } else if (data.cardDueDay) {
+            // migrate legacy format: plain number -> { cutoffDay, dueDay }
+            setCardSettings((prev) => {
+              const next = { ...prev };
+              Object.entries(data.cardDueDay).forEach(([card, val]) => {
+                next[card] = typeof val === "number" ? { cutoffDay: 25, dueDay: val } : val;
+              });
+              return next;
+            });
+          }
           if (data.investPlan) setInvestPlan(data.investPlan);
           setHoldings(data.holdings || []);
           if (data.homeLoan) setHomeLoan((prev) => ({ ...prev, ...data.homeLoan }));
+          if (data.dismissedAlerts) setDismissedAlerts(data.dismissedAlerts);
         }
       } catch (e) { /* fresh start */ }
       finally { loadedRef.current = true; setReady(true); }
@@ -243,12 +265,12 @@ export default function FinanceTracker() {
       try {
         await window.storage.set(STORAGE_KEY, JSON.stringify({
           transactions, savings, debts, budgets,
-          planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardDueDay, investPlan, holdings, homeLoan,
+          planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts,
         }));
       } catch (e) { /* ignore */ }
     }, 250);
     return () => clearTimeout(t);
-  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardDueDay, investPlan, holdings, homeLoan]);
+  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts]);
 
   // Sync the home loan installment into Monthly Plan's Fix Cost list automatically
   useEffect(() => {
@@ -273,28 +295,32 @@ export default function FinanceTracker() {
     });
   }, [homeLoan, planOverrides]);
 
-  // Sync credit-card spending into next month's debt obligations automatically
+  // Sync credit-card spending into debt obligations automatically, grouped by
+  // each card's own statement cycle (cutoff day) rather than calendar month.
   useEffect(() => {
     if (!loadedRef.current) return;
     setDebts((prev) => {
       const totals = {};
       transactions.forEach((t) => {
         if (t.type === "expense" && t.payment === "credit" && t.card) {
-          const ym = t.date.slice(0, 7);
-          const key = t.card + "|" + ym;
+          const cutoffDay = cardSettings[t.card]?.cutoffDay ?? 25;
+          const [y, m, day] = t.date.split("-").map(Number);
+          const txnYm = `${y}-${pad2(m)}`;
+          const statementYm = day <= cutoffDay ? txnYm : addMonths(txnYm, 1);
+          const key = t.card + "|" + statementYm;
           totals[key] = (totals[key] || 0) + Number(t.amount);
         }
       });
       let changed = false;
       let next = [...prev];
       Object.entries(totals).forEach(([key, amt]) => {
-        const [card, ym] = key.split("|");
-        const id = "cc-" + card + "-" + ym;
-        const dueYm = addMonths(ym, 1);
+        const [card, statementYm] = key.split("|");
+        const id = "cc-" + card + "-" + statementYm;
+        const dueYm = addMonths(statementYm, 1);
         const [dy, dm] = dueYm.split("-").map(Number);
-        const dueDay = Math.min(cardDueDay[card] || 5, 28);
-        const dueDateStr = new Date(dy, dm - 1, dueDay).toISOString().slice(0, 10);
-        const label = `บัตรเครดิต ${card} (รอบ ${monthLabel(ym)})`;
+        const dueDay = Math.min(cardSettings[card]?.dueDay ?? 5, 28);
+        const dueDateStr = toLocalDateStr(new Date(dy, dm - 1, dueDay));
+        const label = `บัตรเครดิต ${card} (รอบตัดยอด ${monthLabel(statementYm)})`;
         const idx = next.findIndex((d) => d.id === id);
         if (idx === -1) {
           next.push({ id, name: label, amount: amt, dueDate: dueDateStr, recurring: false, paid: false, auto: true, card });
@@ -306,18 +332,18 @@ export default function FinanceTracker() {
       });
       next = next.filter((d) => {
         if (!d.auto) return true;
-        const ym = d.id.slice(("cc-" + d.card + "-").length);
-        if (!(d.card + "|" + ym in totals) && !d.paid) { changed = true; return false; }
+        const statementYm = d.id.slice(("cc-" + d.card + "-").length);
+        if (!(d.card + "|" + statementYm in totals) && !d.paid) { changed = true; return false; }
         return true;
       });
       return changed ? next : prev;
     });
-  }, [transactions, cardDueDay]);
+  }, [transactions, cardSettings]);
 
   const streak = useMemo(() => computeStreak(transactions), [transactions]);
   const points = transactions.length * 5 + savings.length * 15 + debts.filter((d) => d.paid).length * 10;
 
-  const monthKey = new Date().toISOString().slice(0, 7);
+  const monthKey = ymOf(new Date());
   const monthSpend = useMemo(() => {
     const m = {};
     transactions.forEach((t) => { if (t.type === "expense" && t.date.slice(0, 7) === monthKey) m[t.category] = (m[t.category] || 0) + Number(t.amount); });
@@ -362,6 +388,14 @@ export default function FinanceTracker() {
     return list;
   }, [budgets, monthSpend, debts, planIncomeItems, planFixCostItems, planOverrides, monthKey, investPlan]);
 
+  const visibleAlerts = useMemo(
+    () => alerts.filter((a) => !dismissedAlerts[a.id + "|" + a.text]),
+    [alerts, dismissedAlerts]
+  );
+  function dismissAlert(a) {
+    setDismissedAlerts((prev) => ({ ...prev, [a.id + "|" + a.text]: true }));
+  }
+
   const badges = useMemo(() => {
     const totalSaving = savings.filter((s) => s.kind === "saving").reduce((a, s) => a + s.amount, 0);
     const totalInvest = savings.filter((s) => s.kind === "investment").reduce((a, s) => a + s.amount, 0);
@@ -388,11 +422,11 @@ export default function FinanceTracker() {
   return (
     <div style={{ background: C.bg, fontFamily: "'Nunito', sans-serif", color: C.ink }} className="w-full min-h-full pb-6">
       <style>{FONT_IMPORT}</style>
-      <Header streak={streak} points={points} alertCount={alerts.length} budgetPct={budgetPct} />
-      <TabPills tab={tab} setTab={setTab} alertCount={alerts.length} />
+      <Header streak={streak} points={points} alertCount={visibleAlerts.length} budgetPct={budgetPct} />
+      <TabPills tab={tab} setTab={setTab} alertCount={visibleAlerts.length} />
       <main className="px-4 md:px-6 max-w-2xl mx-auto flex flex-col gap-4 mt-4">
         {tab === "overview" && (
-          <Overview transactions={transactions} alerts={alerts} badges={badges} setTab={setTab} />
+          <Overview transactions={transactions} alerts={visibleAlerts} onDismissAlert={dismissAlert} badges={badges} setTab={setTab} />
         )}
         {tab === "transactions" && (
           <TransactionsTab transactions={transactions} setTransactions={setTransactions} />
@@ -412,7 +446,7 @@ export default function FinanceTracker() {
             planFixCostItems={planFixCostItems} setPlanFixCostItems={setPlanFixCostItems}
             planOverrides={planOverrides} setPlanOverrides={setPlanOverrides}
             savingsPlan={savingsPlan} setSavingsPlan={setSavingsPlan}
-            cardDueDay={cardDueDay} setCardDueDay={setCardDueDay}
+            cardSettings={cardSettings} setCardSettings={setCardSettings}
             debts={debts} transactions={transactions} setSavings={setSavings}
           />
         )}
@@ -503,7 +537,7 @@ function TabPills({ tab, setTab, alertCount }) {
 }
 
 /* ---------------------------------------------------------------- */
-function Overview({ transactions, alerts, badges, setTab }) {
+function Overview({ transactions, alerts, onDismissAlert, badges, setTab }) {
   const [period, setPeriod] = useState("month");
   const [ref, setRef] = useState(new Date());
 
@@ -511,15 +545,16 @@ function Overview({ transactions, alerts, badges, setTab }) {
 
   const range = useMemo(() => {
     const d = new Date(ref);
-    if (period === "day") { const key = d.toISOString().slice(0, 10); return { match: (t) => t.date === key, label: thDate(key) }; }
-    if (period === "year") { const y = d.getFullYear(); return { match: (t) => new Date(t.date).getFullYear() === y, label: `ปี ${y + 543}` }; }
+    if (period === "day") { const key = toLocalDateStr(d); return { match: (t) => t.date === key, label: thDate(key) }; }
+    if (period === "year") { const y = d.getFullYear(); return { match: (t) => parseLocalDate(t.date).getFullYear() === y, label: `ปี ${y + 543}` }; }
     const y = d.getFullYear(), m = d.getMonth();
-    return { match: (t) => { const dt = new Date(t.date); return dt.getFullYear() === y && dt.getMonth() === m; }, label: d.toLocaleDateString("th-TH", { month: "long", year: "numeric" }) };
+    return { match: (t) => { const dt = parseLocalDate(t.date); return dt.getFullYear() === y && dt.getMonth() === m; }, label: d.toLocaleDateString("th-TH", { month: "long", year: "numeric" }) };
   }, [period, ref]);
 
   const filtered = transactions.filter(range.match);
   const income = filtered.filter((t) => t.type === "income").reduce((s, t) => s + Number(t.amount), 0);
-  const expense = filtered.filter((t) => t.type === "expense").reduce((s, t) => s + Number(t.amount), 0);
+  const expense = filtered.filter((t) => t.type === "expense" && t.payment !== "credit").reduce((s, t) => s + Number(t.amount), 0);
+  const creditExpense = filtered.filter((t) => t.type === "expense" && t.payment === "credit").reduce((s, t) => s + Number(t.amount), 0);
 
   const daysInPeriod = useMemo(() => {
     const now = new Date();
@@ -543,7 +578,7 @@ function Overview({ transactions, alerts, badges, setTab }) {
 
   const byCat = useMemo(() => {
     const m = {};
-    filtered.filter((t) => t.type === "expense").forEach((t) => { m[t.category] = (m[t.category] || 0) + Number(t.amount); });
+    filtered.filter((t) => t.type === "expense" && t.payment !== "credit").forEach((t) => { m[t.category] = (m[t.category] || 0) + Number(t.amount); });
     return Object.entries(m).map(([k, v]) => ({ name: catMeta(EXPENSE_CATEGORIES, k).label, value: v, avgPerDay: v / daysInPeriod, color: CAT_COLOR[k] })).sort((a, b) => b.value - a.value);
   }, [filtered, daysInPeriod]);
 
@@ -571,7 +606,7 @@ function Overview({ transactions, alerts, badges, setTab }) {
         </div>
       </button>
 
-      {alerts.length > 0 && <AlertBanner alerts={alerts} />}
+      {alerts.length > 0 && <AlertBanner alerts={alerts} onDismiss={onDismissAlert} />}
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex rounded-full overflow-hidden p-1" style={{ background: C.card, border: `1px solid ${C.graySoft}` }}>
@@ -591,6 +626,13 @@ function Overview({ transactions, alerts, badges, setTab }) {
         <StatCard label="รายจ่าย" value={expense} icon={TrendingDown} color={C.coral} />
         <StatCard label="คงเหลือ" value={income - expense} icon={Wallet} color={C.purple} />
       </div>
+
+      {creditExpense > 0 && (
+        <div style={{ background: C.purpleSoft, color: C.purpleDeep }} className="rounded-2xl px-4 py-3 text-xs font-semibold flex items-start gap-2">
+          <CreditCard size={14} className="shrink-0 mt-0.5" />
+          <span>ใช้จ่ายผ่านบัตรเครดิตช่วงนี้ {fmtTHB(creditExpense)} — ไม่นับเป็นรายจ่ายเดือนนี้ แต่จะกลายเป็นหนี้ที่ต้องชำระในเดือนถัดไปแทน (ดูได้ที่แท็บ "หนี้สิน")</span>
+        </div>
+      )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-1">
@@ -662,13 +704,18 @@ function StatCard({ label, value, icon: Icon, color }) {
   );
 }
 
-function AlertBanner({ alerts }) {
+function AlertBanner({ alerts, onDismiss }) {
   return (
     <div className="flex flex-col gap-2">
       {alerts.map((a) => (
         <div key={a.id} style={{ background: a.level === "hot" ? C.coral : C.yellow }} className="rounded-2xl px-4 py-3 flex items-center gap-2.5 text-sm font-semibold text-white shadow-sm">
           <AlertTriangle size={16} className="shrink-0" color="#fff" />
-          <span style={{ color: a.level === "hot" ? "#fff" : "#5C4400" }}>{a.text}</span>
+          <span style={{ color: a.level === "hot" ? "#fff" : "#5C4400" }} className="flex-1">{a.text}</span>
+          {onDismiss && (
+            <button onClick={() => onDismiss(a)} style={{ color: a.level === "hot" ? "#fff" : "#5C4400" }} className="shrink-0 p-0.5 opacity-80 hover:opacity-100">
+              <X size={16} />
+            </button>
+          )}
         </div>
       ))}
     </div>
@@ -679,6 +726,7 @@ function EmptyNote({ text }) { return <p className="text-sm py-6 text-center" st
 
 /* ---------------------------------------------------------------- */
 function TransactionsTab({ transactions, setTransactions }) {
+  const [editingId, setEditingId] = useState(null);
   const [type, setType] = useState("expense");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState(EXPENSE_CATEGORIES[0].key);
@@ -691,21 +739,39 @@ function TransactionsTab({ transactions, setTransactions }) {
   const categories = type === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
 
   function switchType(t) { setType(t); setCategory(t === "expense" ? EXPENSE_CATEGORIES[0].key : INCOME_CATEGORIES[0].key); }
-  function add() {
+  function resetForm() {
+    setEditingId(null); setType("expense"); setAmount(""); setCategory(EXPENSE_CATEGORIES[0].key);
+    setPayment("cash"); setCard(CREDIT_CARDS[0]); setDate(todayStr()); setNote("");
+  }
+  function startEdit(t) {
+    setEditingId(t.id); setType(t.type); setAmount(String(t.amount)); setCategory(t.category);
+    setPayment(t.payment); setCard(t.card || CREDIT_CARDS[0]); setDate(t.date); setNote(t.note || "");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  function save() {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) return;
-    setTransactions((prev) => [{ id: uid(), type, amount: amt, category, date, payment, card: payment === "credit" ? card : null, note: note.trim() }, ...prev]);
-    setAmount(""); setNote("");
+    if (editingId) {
+      setTransactions((prev) => prev.map((t) => t.id === editingId
+        ? { ...t, type, amount: amt, category, date, payment, card: payment === "credit" ? card : null, note: note.trim() }
+        : t));
+    } else {
+      setTransactions((prev) => [{ id: uid(), type, amount: amt, category, date, payment, card: payment === "credit" ? card : null, note: note.trim() }, ...prev]);
+    }
+    resetForm();
   }
-  function remove(id) { setTransactions((prev) => prev.filter((t) => t.id !== id)); }
+  function remove(id) { setTransactions((prev) => prev.filter((t) => t.id !== id)); if (editingId === id) resetForm(); }
 
   const sorted = [...transactions].sort((a, b) => (a.date < b.date ? 1 : -1));
   const visible = filter === "all" ? sorted : sorted.filter((t) => t.type === filter);
 
   return (
     <div className="flex flex-col gap-4">
-      <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">บันทึกรายการใหม่</p>
+      <div style={{ background: C.card, border: editingId ? `2px solid ${C.purple}` : "none" }} className="rounded-3xl p-4 shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold">{editingId ? "แก้ไขรายการ" : "บันทึกรายการใหม่"}</p>
+          {editingId && <span style={{ background: C.purpleSoft, color: C.purpleDeep }} className="text-[11px] font-bold px-2.5 py-1 rounded-full">กำลังแก้ไข</span>}
+        </div>
 
         <div className="flex rounded-full overflow-hidden p-1 mb-3.5 w-fit" style={{ background: C.graySoft }}>
           <button onClick={() => switchType("expense")} style={{ background: type === "expense" ? C.coral : "transparent", color: type === "expense" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><TrendingDown size={14} />รายจ่าย</button>
@@ -747,9 +813,14 @@ function TransactionsTab({ transactions, setTransactions }) {
         <div className="h-3" />
         <Field label="โน้ต (ไม่บังคับ)"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="เช่น ข้าวเที่ยงกับเพื่อน" style={inputStyle} /></Field>
 
-        <button onClick={add} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="mt-4 flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm">
-          <Plus size={16} /> บันทึกรายการ
-        </button>
+        <div className="flex items-center gap-2 mt-4">
+          <button onClick={save} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm">
+            {editingId ? <><CheckCircle2 size={16} /> บันทึกการแก้ไข</> : <><Plus size={16} /> บันทึกรายการ</>}
+          </button>
+          {editingId && (
+            <button onClick={resetForm} style={{ background: C.graySoft, color: C.inkSoft }} className="px-4 py-2.5 rounded-full text-sm font-bold">ยกเลิก</button>
+          )}
+        </div>
       </div>
 
       <div>
@@ -767,7 +838,7 @@ function TransactionsTab({ transactions, setTransactions }) {
               const meta = catMeta(t.type === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES, t.category);
               const Icon = meta.icon; const color = CAT_COLOR[t.category];
               return (
-                <div key={t.id} style={{ background: C.card }} className="flex items-center gap-3 px-3.5 py-3 rounded-2xl shadow-sm">
+                <div key={t.id} style={{ background: C.card, border: editingId === t.id ? `2px solid ${C.purple}` : "none" }} className="flex items-center gap-3 px-3.5 py-3 rounded-2xl shadow-sm">
                   <div style={{ background: color }} className="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0">
                     <Icon size={16} color="#fff" />
                   </div>
@@ -781,6 +852,7 @@ function TransactionsTab({ transactions, setTransactions }) {
                   <p style={{ fontFamily: "'Baloo 2', sans-serif", color: t.type === "expense" ? C.coral : C.teal }} className="text-sm font-bold whitespace-nowrap">
                     {t.type === "expense" ? "-" : "+"}{fmtTHB(t.amount)}
                   </p>
+                  <button onClick={() => startEdit(t)} style={{ color: C.purple }} className="p-1"><Pencil size={14} /></button>
                   <button onClick={() => remove(t.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={14} /></button>
                 </div>
               );
@@ -907,6 +979,8 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
 
 /* ---------------------------------------------------------------- */
 function DebtsTab({ debts, setDebts }) {
+  const [debtType, setDebtType] = useState("other");
+  const [selectedCard, setSelectedCard] = useState(CREDIT_CARDS[0]);
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
   const [dueDate, setDueDate] = useState(todayStr());
@@ -914,8 +988,11 @@ function DebtsTab({ debts, setDebts }) {
 
   function add() {
     const amt = parseFloat(amount);
-    if (!amt || amt <= 0 || !name.trim()) return;
-    setDebts((prev) => [{ id: uid(), name: name.trim(), amount: amt, dueDate, recurring, paid: false }, ...prev]);
+    const finalName = debtType === "credit" ? `บัตรเครดิต ${selectedCard}` : name.trim();
+    if (!amt || amt <= 0 || !finalName) return;
+    const item = { id: uid(), name: finalName, amount: amt, dueDate, recurring, paid: false };
+    if (debtType === "credit") item.card = selectedCard;
+    setDebts((prev) => [item, ...prev]);
     setName(""); setAmount("");
   }
   function remove(id) { setDebts((prev) => prev.filter((d) => d.id !== id)); }
@@ -924,8 +1001,8 @@ function DebtsTab({ debts, setDebts }) {
       if (d.id !== id) return d;
       const nowPaid = !d.paid;
       if (nowPaid && d.recurring) {
-        const next = new Date(d.dueDate); next.setMonth(next.getMonth() + 1);
-        return { ...d, paid: false, dueDate: next.toISOString().slice(0, 10) };
+        const next = parseLocalDate(d.dueDate); next.setMonth(next.getMonth() + 1);
+        return { ...d, paid: false, dueDate: toLocalDateStr(next) };
       }
       return { ...d, paid: nowPaid };
     }));
@@ -937,8 +1014,20 @@ function DebtsTab({ debts, setDebts }) {
     <div className="flex flex-col gap-4">
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">เพิ่มรายการหนี้สิน / กำหนดชำระ</p>
+        <div className="flex rounded-full overflow-hidden p-1 mb-3.5 w-fit" style={{ background: C.graySoft }}>
+          <button onClick={() => setDebtType("other")} style={{ background: debtType === "other" ? C.purple : "transparent", color: debtType === "other" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">หนี้ทั่วไป</button>
+          <button onClick={() => setDebtType("credit")} style={{ background: debtType === "credit" ? C.purple : "transparent", color: debtType === "credit" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><CreditCard size={14} />บัตรเครดิต</button>
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-          <Field label="ชื่อรายการ"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น ค่างวดบัตรเครดิต SCB" style={inputStyle} /></Field>
+          <Field label="ชื่อรายการ">
+            {debtType === "credit" ? (
+              <select value={selectedCard} onChange={(e) => setSelectedCard(e.target.value)} style={inputStyle}>
+                {CREDIT_CARDS.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            ) : (
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น ผ่อนมือถือ" style={inputStyle} />
+            )}
+          </Field>
           <Field label="จำนวนเงิน (บาท)"><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
           <Field label="วันครบกำหนด"><input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} style={inputStyle} /></Field>
           <Field label="รูปแบบ">
@@ -946,6 +1035,7 @@ function DebtsTab({ debts, setDebts }) {
           </Field>
         </div>
         <button onClick={add} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> เพิ่มรายการ</button>
+        {debtType === "credit" && <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>วันตัดรอบ/ครบกำหนดอัตโนมัติของแต่ละบัตรตั้งได้ที่หน้า "แผนรายเดือน" — รายการนี้ไว้สำหรับกำหนดยอด/วันครบกำหนดแบบระบุเอง</p>}
       </div>
 
       <div>
@@ -962,7 +1052,10 @@ function DebtsTab({ debts, setDebts }) {
                 <div key={d.id} style={{ background: C.card }} className="flex items-center gap-3 px-3.5 py-3 rounded-2xl shadow-sm">
                   <button onClick={() => togglePaid(d.id)} style={{ color: d.paid ? C.teal : C.graySoft }}><CheckCircle2 size={22} /></button>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold truncate" style={{ textDecoration: d.paid ? "line-through" : "none" }}>{d.name}{d.recurring ? " (รายเดือน)" : ""}</p>
+                    <p className="text-sm font-bold truncate flex items-center gap-1.5" style={{ textDecoration: d.paid ? "line-through" : "none" }}>
+                      {d.card && <CreditCard size={12} color={C.purple} className="shrink-0" />}
+                      {d.name}{d.recurring ? " (รายเดือน)" : ""}{d.auto ? " · อัตโนมัติ" : ""}
+                    </p>
                     <p className="text-xs" style={{ color: C.inkSoft }}>ครบกำหนด {thDate(d.dueDate)}</p>
                   </div>
                   <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-bold whitespace-nowrap px-2.5 py-1 rounded-full">{statusText}</span>
@@ -1026,7 +1119,7 @@ function MonthlyPlanTab({
   planFixCostItems, setPlanFixCostItems,
   planOverrides, setPlanOverrides,
   savingsPlan, setSavingsPlan,
-  cardDueDay, setCardDueDay,
+  cardSettings, setCardSettings,
   debts, transactions, setSavings,
 }) {
   const [ym, setYm] = useState(ymOf(new Date()));
@@ -1166,21 +1259,34 @@ function MonthlyPlanTab({
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <button onClick={() => setShowSettings((s) => !s)} className="w-full flex items-center justify-between">
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold flex items-center gap-2"><Settings size={16} />ตั้งค่าวันครบกำหนดบัตรเครดิต</p>
+          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold flex items-center gap-2"><Settings size={16} />ตั้งค่าวันตัดรอบ/ครบกำหนดบัตรเครดิต</p>
           {showSettings ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </button>
         {showSettings && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3">
-            {CREDIT_CARDS.map((card) => (
-              <Field key={card} label={card}>
-                <input type="number" min="1" max="28" value={cardDueDay[card] ?? 5}
-                  onChange={(e) => setCardDueDay((p) => ({ ...p, [card]: Math.min(28, Math.max(1, parseInt(e.target.value) || 1)) }))}
-                  style={inputStyle} />
-              </Field>
-            ))}
+          <div className="flex flex-col gap-2.5 mt-3">
+            {CREDIT_CARDS.map((card) => {
+              const cs = cardSettings[card] || { cutoffDay: 25, dueDay: 5 };
+              return (
+                <div key={card} style={{ background: C.bg }} className="rounded-2xl px-3.5 py-2.5 flex items-center gap-3 flex-wrap">
+                  <p className="text-sm font-bold w-20 shrink-0">{card}</p>
+                  <div className="flex items-center gap-1.5 text-xs" style={{ color: C.inkSoft }}>
+                    วันตัดรอบ
+                    <input type="number" min="1" max="31" value={cs.cutoffDay}
+                      onChange={(e) => setCardSettings((p) => ({ ...p, [card]: { ...cs, cutoffDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) } }))}
+                      style={{ ...inputStyle, width: 55 }} />
+                  </div>
+                  <div className="flex items-center gap-1.5 text-xs" style={{ color: C.inkSoft }}>
+                    วันครบกำหนดชำระ
+                    <input type="number" min="1" max="31" value={cs.dueDay}
+                      onChange={(e) => setCardSettings((p) => ({ ...p, [card]: { ...cs, dueDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) } }))}
+                      style={{ ...inputStyle, width: 55 }} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
-        <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>ระบุวันที่ของเดือนถัดไปที่ต้องชำระบัตรแต่ละใบ ระบบจะใช้วันนี้ตั้งกำหนดชำระอัตโนมัติเมื่อมีรายจ่ายผ่านบัตร</p>
+        <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>แต่ละบัตรตัดรอบและครบกำหนดชำระคนละวันได้ ระบบจะรวมยอดตามรอบบิลจริงของบัตรนั้นๆ แล้วตั้งเป็นหนี้ที่ต้องจ่ายให้อัตโนมัติที่แท็บ "หนี้สิน"</p>
       </div>
     </div>
   );
@@ -1220,11 +1326,14 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
   const [type, setType] = useState("");
   const [amount, setAmount] = useState("");
   const [recurring, setRecurring] = useState(true);
+  const [error, setError] = useState("");
   const listId = "presets-" + title.replace(/\s+/g, "");
 
   function add() {
     const amt = parseFloat(amount);
-    if (!amt || amt <= 0 || !name.trim()) return;
+    if (!name.trim()) { setError("กรอกชื่อรายการก่อนนะครับ"); return; }
+    if (!amt || amt <= 0) { setError("กรอกจำนวนเงินให้มากกว่า 0"); return; }
+    setError("");
     const item = { id: uid(), name: name.trim(), type: type.trim() || "อื่นๆ", amount: amt, recurring };
     if (!recurring) item.month = ym;
     setItems((prev) => [...prev, item]);
@@ -1286,7 +1395,7 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
       <div className="flex flex-wrap gap-2 items-end">
         <div className="w-full sm:w-auto flex-1 min-w-[120px]">
           <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>ชื่อรายการ</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อ" style={inputStyle} />
+          <input value={name} onChange={(e) => { setName(e.target.value); setError(""); }} placeholder="ชื่อ" style={inputStyle} />
         </div>
         <div className="w-full sm:w-auto flex-1 min-w-[120px]">
           <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>ประเภท</label>
@@ -1295,13 +1404,14 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
         </div>
         <div className="w-28">
           <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>จำนวนเงิน</label>
-          <input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} />
+          <input type="number" min="0" value={amount} onChange={(e) => { setAmount(e.target.value); setError(""); }} placeholder="0.00" style={inputStyle} />
         </div>
         <button onClick={() => setRecurring((r) => !r)} style={{ background: recurring ? color : C.graySoft, color: recurring ? "#fff" : C.inkSoft }} className="px-3 py-2 rounded-full text-xs font-bold whitespace-nowrap">
           {recurring ? "ทุกเดือน" : "เดือนนี้เดือนเดียว"}
         </button>
         <button onClick={add} style={{ background: color, color: "#fff" }} className="p-2.5 rounded-full shrink-0"><Plus size={16} /></button>
       </div>
+      {error && <p className="text-xs font-semibold mt-2" style={{ color: C.coral }}>{error}</p>}
     </div>
   );
 }
@@ -1314,7 +1424,18 @@ function nextMonthlyDate(day) {
   const todayOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   let d = new Date(now.getFullYear(), now.getMonth(), Math.min(day, 28));
   if (d < todayOnly) d = new Date(now.getFullYear(), now.getMonth() + 1, Math.min(day, 28));
-  return d.toISOString().slice(0, 10);
+  return toLocalDateStr(d);
+}
+function addMonthsToDate(dateStr, n) {
+  const d = parseLocalDate(dateStr);
+  const day = d.getDate();
+  const target = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(day, lastDay));
+  return toLocalDateStr(target);
+}
+function freqLabel(n) {
+  return n === 1 ? "ทุกเดือน" : `ทุก ${n} เดือน`;
 }
 
 function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings }) {
@@ -1326,6 +1447,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings }) {
   const [scheduleType, setScheduleType] = useState("monthly");
   const [date, setDate] = useState(todayStr());
   const [day, setDay] = useState(5);
+  const [intervalMonths, setIntervalMonths] = useState(1);
   const [time, setTime] = useState("09:00");
 
   function setTotalPool(v) { setInvestPlan((p) => ({ ...p, totalPool: parseFloat(v) || 0 })); }
@@ -1336,7 +1458,9 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings }) {
     const itemDate = scheduleType === "monthly" ? nextMonthlyDate(day) : date;
     const item = {
       id: uid(), name: name.trim(), category: category.trim() || "อื่นๆ",
-      mode, value: val, date: itemDate, time, recurring: scheduleType === "monthly", executed: false,
+      mode, value: val, date: itemDate, time, recurring: scheduleType === "monthly",
+      intervalMonths: scheduleType === "monthly" ? Math.max(1, Math.min(12, parseInt(intervalMonths) || 1)) : 1,
+      executed: false,
     };
     setInvestPlan((p) => ({ ...p, items: [...p.items, item] }));
     setName(""); setCategory(""); setValue("");
@@ -1349,7 +1473,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings }) {
     const amt = investItemAmount(item, totalPool);
     setSavings((prev) => [{ id: uid(), kind: "investment", name: item.name, amount: amt, date: item.date, target: null, note: item.category }, ...prev]);
     if (item.recurring) {
-      updateItem(item.id, { date: nextMonthlyDate(new Date(item.date).getDate()), executed: false });
+      updateItem(item.id, { date: addMonthsToDate(item.date, item.intervalMonths || 1), executed: false });
     } else {
       updateItem(item.id, { executed: true });
     }
@@ -1416,7 +1540,15 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings }) {
                       <p className="text-sm font-bold truncate" style={{ textDecoration: item.executed ? "line-through" : "none" }}>{item.name}</p>
                       <p className="text-[11px] flex items-center gap-1 flex-wrap" style={{ color: C.inkSoft }}>
                         <Tag size={10} /><span>{item.category}</span><span>·</span>
-                        {item.recurring ? <span className="flex items-center gap-0.5"><Repeat size={10} />ทุกเดือน วันที่ {new Date(item.date).getDate()}</span> : <span>{thDate(item.date)}</span>}
+                        {item.recurring ? (
+                          <span className="flex items-center gap-1">
+                            <Repeat size={10} />ทุก
+                            <input type="number" min="1" max="12" defaultValue={item.intervalMonths || 1} key={item.id + "-freq"}
+                              onBlur={(e) => updateItem(item.id, { intervalMonths: Math.max(1, Math.min(12, parseInt(e.target.value) || 1)) })}
+                              style={{ width: 32, border: `1px solid ${C.graySoft}`, borderRadius: 6, padding: "0 2px", textAlign: "center", fontSize: 11 }} />
+                            เดือน วันที่ {parseLocalDate(item.date).getDate()}
+                          </span>
+                        ) : <span>{thDate(item.date)}</span>}
                         <span>·</span><span className="flex items-center gap-0.5"><Clock size={10} />{item.time}</span>
                       </p>
                     </div>
@@ -1463,18 +1595,26 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings }) {
         <Field label="กำหนดเวลาลงทุน">
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex rounded-full overflow-hidden p-0.5" style={{ background: C.graySoft }}>
-              <button onClick={() => setScheduleType("monthly")} style={{ background: scheduleType === "monthly" ? C.purple : "transparent", color: scheduleType === "monthly" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1"><Repeat size={11} />ทุกเดือน</button>
+              <button onClick={() => setScheduleType("monthly")} style={{ background: scheduleType === "monthly" ? C.purple : "transparent", color: scheduleType === "monthly" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1"><Repeat size={11} />ตามรอบ</button>
               <button onClick={() => setScheduleType("once")} style={{ background: scheduleType === "once" ? C.purple : "transparent", color: scheduleType === "once" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">ครั้งเดียว</button>
             </div>
             {scheduleType === "monthly" ? (
               <div className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: C.inkSoft }}>
-                วันที่ <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(Math.min(28, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 60 }} /> ของทุกเดือน
+                วันที่ <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(Math.min(28, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 60 }} /> ของทุก
+                <input type="number" min="1" max="12" value={intervalMonths} onChange={(e) => setIntervalMonths(Math.min(12, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 50 }} /> เดือน
               </div>
             ) : (
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, width: 150 }} />
             )}
             <input type="time" value={time} onChange={(e) => setTime(e.target.value)} style={{ ...inputStyle, width: 110 }} />
           </div>
+          {scheduleType === "monthly" && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {[1, 2, 3, 6, 12].map((n) => (
+                <button key={n} onClick={() => setIntervalMonths(n)} style={{ background: intervalMonths === n ? C.purpleSoft : C.graySoft, color: intervalMonths === n ? C.purpleDeep : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold">{freqLabel(n)}</button>
+              ))}
+            </div>
+          )}
         </Field>
         <button onClick={addItem} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="mt-4 flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> เพิ่มรายการลงทุน</button>
       </div>
@@ -1625,7 +1765,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
   const [initialRate, setInitialRate] = useState(homeLoan.rateChanges?.[0]?.rate ?? "");
   const [newRate, setNewRate] = useState("");
   const [newRateMonth, setNewRateMonth] = useState(ymOf(new Date()));
-  const [showFull, setShowFull] = useState(false);
+  const [viewYear, setViewYear] = useState(new Date().getFullYear());
 
   const schedule = useMemo(() => buildAmortizationSchedule(homeLoan, planOverrides), [homeLoan, planOverrides]);
   const currentYm = ymOf(new Date());
@@ -1642,15 +1782,16 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
   function save() {
     const p = parseFloat(principal), pay = parseFloat(payment), rate = parseFloat(initialRate);
     if (!p || p <= 0 || !pay || pay <= 0 || isNaN(rate)) return;
-    setHomeLoan({
+    setHomeLoan((prev) => ({
       active: true, name: name.trim() || "ผ่อนบ้าน", principal: p, startMonth, payment: pay,
       dueDay: Math.min(31, Math.max(1, parseInt(dueDay) || 5)),
-      rateChanges: homeLoan.active && homeLoan.rateChanges?.length ? homeLoan.rateChanges : [{ ym: startMonth, rate }],
-    });
+      rateChanges: prev.active && prev.rateChanges?.length ? prev.rateChanges : [{ ym: startMonth, rate }],
+      paidMonths: prev.paidMonths || {},
+    }));
     setEditing(false);
   }
   function resetLoan() {
-    setHomeLoan({ active: false, name: "", principal: 0, startMonth: ymOf(new Date()), payment: 0, dueDay: 5, rateChanges: [] });
+    setHomeLoan({ active: false, name: "", principal: 0, startMonth: ymOf(new Date()), payment: 0, dueDay: 5, rateChanges: [], paidMonths: {} });
     setPlanOverrides((prev) => {
       const next = { ...prev };
       Object.keys(next).forEach((ym) => { if (next[ym]?.[HOME_LOAN_FIXCOST_ID] !== undefined) { next[ym] = { ...next[ym] }; delete next[ym][HOME_LOAN_FIXCOST_ID]; } });
@@ -1666,6 +1807,18 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
   }
   function removeRateChange(idx) {
     setHomeLoan((p) => ({ ...p, rateChanges: p.rateChanges.filter((_, i) => i !== idx) }));
+  }
+  function togglePaid(ym) {
+    setHomeLoan((p) => {
+      const next = { ...(p.paidMonths || {}) };
+      if (next[ym]) delete next[ym]; else next[ym] = true;
+      return { ...p, paidMonths: next };
+    });
+  }
+  function updateActualPayment(ym, val) {
+    const amt = parseFloat(val);
+    if (isNaN(amt) || amt < 0) return;
+    setPlanOverrides((prev) => ({ ...prev, [ym]: { ...(prev[ym] || {}), [HOME_LOAN_FIXCOST_ID]: amt } }));
   }
 
   if (!homeLoan.active || editing) {
@@ -1691,8 +1844,9 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
     );
   }
 
-  const focusIdx = currentRowIndex === -1 ? schedule.length : currentRowIndex;
-  const displayRows = showFull ? schedule : schedule.slice(Math.max(0, focusIdx - 2), focusIdx + 12);
+  const yearRows = schedule.filter((r) => r.ym.slice(0, 4) === String(viewYear));
+  const minYear = schedule.length ? parseInt(schedule[0].ym.slice(0, 4)) : viewYear;
+  const maxYear = schedule.length ? parseInt(schedule[schedule.length - 1].ym.slice(0, 4)) : viewYear;
 
   return (
     <div className="flex flex-col gap-4">
@@ -1758,38 +1912,56 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold">ตารางผ่อนชำระ</p>
-          <button onClick={() => setShowFull((s) => !s)} style={{ background: C.graySoft, color: C.inkSoft }} className="px-3 py-1 rounded-full text-xs font-bold">{showFull ? "แสดงเฉพาะช่วงนี้" : "แสดงทั้งหมด"}</button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setViewYear((y) => y - 1)} style={{ background: C.graySoft, color: C.inkSoft }} className="p-1.5 rounded-full"><ChevronLeft size={14} /></button>
+            <span style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-sm font-bold whitespace-nowrap">ปี {viewYear + 543}</span>
+            <button onClick={() => setViewYear((y) => y + 1)} style={{ background: C.graySoft, color: C.inkSoft }} className="p-1.5 rounded-full"><ChevronRight size={14} /></button>
+            <button onClick={() => setViewYear(new Date().getFullYear())} style={{ background: C.brownSoft, color: C.brown }} className="px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap">ปีนี้</button>
+          </div>
         </div>
-        <div className="overflow-x-auto" style={showFull ? { maxHeight: 420, overflowY: "auto" } : {}}>
-          <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ color: C.inkSoft }}>
-                <th className="text-left font-bold pb-2 pr-2">เดือน</th>
-                <th className="text-right font-bold pb-2 px-2">ยอดผ่อน</th>
-                <th className="text-right font-bold pb-2 px-2">ดอกเบี้ย</th>
-                <th className="text-right font-bold pb-2 px-2">ดอกเบี้ยที่จ่าย</th>
-                <th className="text-right font-bold pb-2 px-2">เงินต้นที่ลด</th>
-                <th className="text-right font-bold pb-2 pl-2">เงินต้นเหลือ</th>
-              </tr>
-            </thead>
-            <tbody>
-              {displayRows.map((r) => {
-                const isCurrent = r.ym === currentYm;
-                return (
-                  <tr key={r.ym} style={{ background: isCurrent ? C.brownSoft : "transparent", borderTop: `1px solid ${C.graySoft}` }}>
-                    <td className="py-2 pr-2 font-bold whitespace-nowrap">{monthLabel(r.ym)}{isCurrent ? " •" : ""}</td>
-                    <td className="text-right px-2 whitespace-nowrap" style={{ fontFamily: "'Baloo 2', sans-serif" }}>{fmtTHB(r.payment)}</td>
-                    <td className="text-right px-2 whitespace-nowrap">{r.rate}%</td>
-                    <td className="text-right px-2 whitespace-nowrap" style={{ color: C.coral }}>{fmtTHB(r.interest)}</td>
-                    <td className="text-right px-2 whitespace-nowrap" style={{ color: C.teal }}>{fmtTHB(r.principalPaid)}</td>
-                    <td className="text-right pl-2 whitespace-nowrap font-bold">{fmtTHB(r.remaining)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        <p className="text-[11px] mt-3" style={{ color: C.inkSoft }}>ยอดผ่อนซิงก์เป็นรายการ Fix Cost ในหน้า "แผนรายเดือน" ให้อัตโนมัติ — ถ้าเดือนไหนจ่ายเพิ่ม/จ่ายน้อยกว่าปกติ แก้ไขยอดของเดือนนั้นได้ที่หน้าแผนรายเดือน ตารางนี้จะคำนวณใหม่ให้ทันที</p>
+        {yearRows.length === 0 ? (
+          <EmptyNote text={viewYear < minYear ? "ยังไม่เริ่มผ่อนในปีนี้" : viewYear > maxYear ? "ผ่อนหมดก่อนถึงปีนี้แล้ว" : "ไม่มีรายการในปีนี้"} />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ color: C.inkSoft }}>
+                  <th className="text-center font-bold pb-2 pr-1">จ่ายแล้ว</th>
+                  <th className="text-left font-bold pb-2 pr-2">เดือน</th>
+                  <th className="text-right font-bold pb-2 px-2">ยอดผ่อนจริง</th>
+                  <th className="text-right font-bold pb-2 px-2">ดอกเบี้ย</th>
+                  <th className="text-right font-bold pb-2 px-2">ดอกเบี้ยที่จ่าย</th>
+                  <th className="text-right font-bold pb-2 px-2">เงินต้นที่ลด</th>
+                  <th className="text-right font-bold pb-2 pl-2">เงินต้นเหลือ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {yearRows.map((r) => {
+                  const isCurrent = r.ym === currentYm;
+                  const isPaid = !!homeLoan.paidMonths?.[r.ym];
+                  return (
+                    <tr key={r.ym} style={{ background: isCurrent ? C.brownSoft : "transparent", borderTop: `1px solid ${C.graySoft}` }}>
+                      <td className="text-center py-2 pr-1">
+                        <button onClick={() => togglePaid(r.ym)}><CheckCircle2 size={18} color={isPaid ? C.teal : C.graySoft} /></button>
+                      </td>
+                      <td className="py-2 pr-2 font-bold whitespace-nowrap">{monthLabel(r.ym)}{isCurrent ? " •" : ""}</td>
+                      <td className="text-right px-2 whitespace-nowrap">
+                        <input type="number" min="0" defaultValue={r.payment} key={r.ym + "-pay-" + r.payment}
+                          onBlur={(e) => updateActualPayment(r.ym, e.target.value)}
+                          style={{ ...inputStyle, width: 90, padding: "4px 8px", fontFamily: "'Baloo 2', sans-serif", textAlign: "right" }} />
+                      </td>
+                      <td className="text-right px-2 whitespace-nowrap">{r.rate}%</td>
+                      <td className="text-right px-2 whitespace-nowrap" style={{ color: C.coral }}>{fmtTHB(r.interest)}</td>
+                      <td className="text-right px-2 whitespace-nowrap" style={{ color: C.teal }}>{fmtTHB(r.principalPaid)}</td>
+                      <td className="text-right pl-2 whitespace-nowrap font-bold">{fmtTHB(r.remaining)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-[11px] mt-3" style={{ color: C.inkSoft }}>ติ๊กถูก "จ่ายแล้ว" เพื่อเช็คลิสต์เดือนที่ชำระ และแก้ "ยอดผ่อนจริง" ได้ตรงๆ ในตาราง (เช่นเดือนไหนโปะเพิ่ม) ตารางทั้งหมดจะคำนวณเงินต้น/ดอกเบี้ยใหม่ให้ทันที ค่านี้ผูกกับรายการ Fix Cost ในหน้า "แผนรายเดือน" ด้วย</p>
       </div>
     </div>
   );
