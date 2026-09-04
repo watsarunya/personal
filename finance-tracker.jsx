@@ -462,7 +462,7 @@ export default function FinanceTracker() {
           />
         )}
         {tab === "homeLoan" && (
-          <HomePlanningTab homeLoan={homeLoan} setHomeLoan={setHomeLoan} planOverrides={planOverrides} setPlanOverrides={setPlanOverrides} />
+          <HomePlanningTab homeLoan={homeLoan} setHomeLoan={setHomeLoan} planOverrides={planOverrides} setPlanOverrides={setPlanOverrides} planFixCostItems={planFixCostItems} setPlanFixCostItems={setPlanFixCostItems} />
         )}
       </main>
     </div>
@@ -1439,6 +1439,8 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
 /* ---------------------------------------------------------------- */
 /*  Investment Plan (portfolio allocation + scheduled reminders)     */
 /* ---------------------------------------------------------------- */
+const MONTH_ABBR_TH = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+
 function nextMonthlyDate(day) {
   const now = new Date();
   const todayOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -1454,6 +1456,32 @@ function addMonthsToDate(dateStr, n) {
   target.setDate(Math.min(day, lastDay));
   return toLocalDateStr(target);
 }
+function nextCustomMonthDateFromToday(months, day) {
+  const sorted = [...months].sort((a, b) => a - b);
+  if (sorted.length === 0) return todayStr();
+  const now = new Date();
+  const todayOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  for (const m of sorted) {
+    const lastDay = new Date(now.getFullYear(), m, 0).getDate();
+    const candidate = new Date(now.getFullYear(), m - 1, Math.min(day, lastDay));
+    if (candidate >= todayOnly) return toLocalDateStr(candidate);
+  }
+  const m = sorted[0];
+  const lastDay = new Date(now.getFullYear() + 1, m, 0).getDate();
+  return toLocalDateStr(new Date(now.getFullYear() + 1, m - 1, Math.min(day, lastDay)));
+}
+function nextCustomMonthDate(dateStr, months) {
+  const sorted = [...months].sort((a, b) => a - b);
+  if (sorted.length === 0) return dateStr;
+  const d = parseLocalDate(dateStr);
+  const day = d.getDate();
+  const curMonth = d.getMonth() + 1;
+  let year = d.getFullYear();
+  let nextMonth = sorted.find((m) => m > curMonth);
+  if (nextMonth === undefined) { nextMonth = sorted[0]; year += 1; }
+  const lastDay = new Date(year, nextMonth, 0).getDate();
+  return toLocalDateStr(new Date(year, nextMonth - 1, Math.min(day, lastDay)));
+}
 function freqLabel(n) {
   return n === 1 ? "ทุกเดือน" : `ทุก ${n} เดือน`;
 }
@@ -1466,21 +1494,31 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
   const [mode, setMode] = useState("percent");
   const [value, setValue] = useState("");
   const [scheduleType, setScheduleType] = useState("monthly");
+  const [scheduleMode, setScheduleMode] = useState("interval");
   const [date, setDate] = useState(todayStr());
   const [day, setDay] = useState(5);
   const [intervalMonths, setIntervalMonths] = useState(1);
+  const [customMonths, setCustomMonths] = useState([]);
   const [time, setTime] = useState("09:00");
 
   function setTotalPool(v) { setInvestPlan((p) => ({ ...p, totalPool: parseFloat(v) || 0 })); }
+  function toggleCustomMonth(m) {
+    setCustomMonths((prev) => prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m].sort((a, b) => a - b));
+  }
 
   function addItem() {
     const val = parseFloat(value);
     if (!val || val <= 0 || !name.trim()) return;
-    const itemDate = scheduleType === "monthly" ? nextMonthlyDate(day) : date;
+    if (scheduleType === "monthly" && scheduleMode === "custom" && customMonths.length === 0) return;
+    const itemDate = scheduleType !== "monthly" ? date
+      : scheduleMode === "custom" ? nextCustomMonthDateFromToday(customMonths, day)
+      : nextMonthlyDate(day);
     const item = {
       id: uid(), name: name.trim(), category: category.trim() || "อื่นๆ",
       mode, value: val, date: itemDate, time, recurring: scheduleType === "monthly",
-      intervalMonths: scheduleType === "monthly" ? Math.max(1, Math.min(12, parseInt(intervalMonths) || 1)) : 1,
+      scheduleMode: scheduleType === "monthly" ? scheduleMode : "interval",
+      intervalMonths: scheduleType === "monthly" && scheduleMode === "interval" ? Math.max(1, Math.min(12, parseInt(intervalMonths) || 1)) : 1,
+      months: scheduleType === "monthly" && scheduleMode === "custom" ? [...customMonths] : [],
       executed: false,
     };
     setInvestPlan((p) => ({ ...p, items: [...p.items, item] }));
@@ -1495,7 +1533,10 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
     const amt = investItemAmount(item, totalPool, ym, investPlan.overrides);
     setSavings((prev) => [{ id: uid(), kind: "investment", name: item.name, amount: amt, date: item.date, target: null, note: item.category }, ...prev]);
     if (item.recurring) {
-      updateItem(item.id, { date: addMonthsToDate(item.date, item.intervalMonths || 1), executed: false });
+      const nextDate = item.scheduleMode === "custom" && item.months?.length
+        ? nextCustomMonthDate(item.date, item.months)
+        : addMonthsToDate(item.date, item.intervalMonths || 1);
+      updateItem(item.id, { date: nextDate, executed: false });
     } else {
       updateItem(item.id, { executed: true });
     }
@@ -1571,13 +1612,19 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
                       <p className="text-[11px] flex items-center gap-1 flex-wrap" style={{ color: C.inkSoft }}>
                         <Tag size={10} /><span>{item.category}</span><span>·</span>
                         {item.recurring ? (
-                          <span className="flex items-center gap-1">
-                            <Repeat size={10} />ทุก
-                            <input type="number" min="1" max="12" defaultValue={item.intervalMonths || 1} key={item.id + "-freq"}
-                              onBlur={(e) => updateItem(item.id, { intervalMonths: Math.max(1, Math.min(12, parseInt(e.target.value) || 1)) })}
-                              style={{ width: 32, border: `1px solid ${C.graySoft}`, borderRadius: 6, padding: "0 2px", textAlign: "center", fontSize: 11 }} />
-                            เดือน วันที่ {parseLocalDate(item.date).getDate()}
-                          </span>
+                          item.scheduleMode === "custom" ? (
+                            <span className="flex items-center gap-1 flex-wrap">
+                              <Repeat size={10} />เฉพาะ {(item.months || []).map((m) => MONTH_ABBR_TH[m - 1]).join(", ")} วันที่ {parseLocalDate(item.date).getDate()}
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1">
+                              <Repeat size={10} />ทุก
+                              <input type="number" min="1" max="12" defaultValue={item.intervalMonths || 1} key={item.id + "-freq"}
+                                onBlur={(e) => updateItem(item.id, { intervalMonths: Math.max(1, Math.min(12, parseInt(e.target.value) || 1)) })}
+                                style={{ width: 32, border: `1px solid ${C.graySoft}`, borderRadius: 6, padding: "0 2px", textAlign: "center", fontSize: 11 }} />
+                              เดือน วันที่ {parseLocalDate(item.date).getDate()}
+                            </span>
+                          )
                         ) : <span>{thDate(item.date)}</span>}
                         <span>·</span><span className="flex items-center gap-0.5"><Clock size={10} />{item.time}</span>
                       </p>
@@ -1595,6 +1642,21 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
                     <button onClick={() => markExecuted(item)} title="ทำเครื่องหมายว่าลงทุนแล้ว" style={{ color: item.executed ? C.teal : C.graySoft }}><CheckCircle2 size={20} /></button>
                     <button onClick={() => removeItem(item.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={13} /></button>
                   </div>
+                  {item.recurring && item.scheduleMode === "custom" && (
+                    <div className="flex flex-wrap gap-1 mt-2 ml-11">
+                      {MONTH_ABBR_TH.map((label, i) => {
+                        const m = i + 1;
+                        const active = (item.months || []).includes(m);
+                        return (
+                          <button key={m} onClick={() => {
+                            const nextMonths = active ? (item.months || []).filter((x) => x !== m) : [...(item.months || []), m].sort((a, b) => a - b);
+                            if (nextMonths.length === 0) return;
+                            updateItem(item.id, { months: nextMonths });
+                          }} style={{ background: active ? C.purple : C.graySoft, color: active ? "#fff" : C.inkSoft }} className="px-2 py-0.5 rounded-full text-[10px] font-bold">{label}</button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1628,21 +1690,44 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
               <button onClick={() => setScheduleType("monthly")} style={{ background: scheduleType === "monthly" ? C.purple : "transparent", color: scheduleType === "monthly" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1"><Repeat size={11} />ตามรอบ</button>
               <button onClick={() => setScheduleType("once")} style={{ background: scheduleType === "once" ? C.purple : "transparent", color: scheduleType === "once" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">ครั้งเดียว</button>
             </div>
-            {scheduleType === "monthly" ? (
-              <div className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: C.inkSoft }}>
-                วันที่ <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(Math.min(28, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 60 }} /> ของทุก
-                <input type="number" min="1" max="12" value={intervalMonths} onChange={(e) => setIntervalMonths(Math.min(12, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 50 }} /> เดือน
+            {scheduleType === "monthly" && (
+              <div className="flex rounded-full overflow-hidden p-0.5" style={{ background: C.graySoft }}>
+                <button onClick={() => setScheduleMode("interval")} style={{ background: scheduleMode === "interval" ? C.purple : "transparent", color: scheduleMode === "interval" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">ทุก N เดือน</button>
+                <button onClick={() => setScheduleMode("custom")} style={{ background: scheduleMode === "custom" ? C.purple : "transparent", color: scheduleMode === "custom" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">เลือกเดือนเอง</button>
               </div>
+            )}
+            {scheduleType === "monthly" ? (
+              scheduleMode === "interval" ? (
+                <div className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: C.inkSoft }}>
+                  วันที่ <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(Math.min(28, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 60 }} /> ของทุก
+                  <input type="number" min="1" max="12" value={intervalMonths} onChange={(e) => setIntervalMonths(Math.min(12, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 50 }} /> เดือน
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: C.inkSoft }}>
+                  วันที่ <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(Math.min(28, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 60 }} /> ของเดือนที่เลือก
+                </div>
+              )
             ) : (
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, width: 150 }} />
             )}
             <input type="time" value={time} onChange={(e) => setTime(e.target.value)} style={{ ...inputStyle, width: 110 }} />
           </div>
-          {scheduleType === "monthly" && (
+          {scheduleType === "monthly" && scheduleMode === "interval" && (
             <div className="flex flex-wrap gap-1.5 mt-2">
               {[1, 2, 3, 6, 12].map((n) => (
                 <button key={n} onClick={() => setIntervalMonths(n)} style={{ background: intervalMonths === n ? C.purpleSoft : C.graySoft, color: intervalMonths === n ? C.purpleDeep : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold">{freqLabel(n)}</button>
               ))}
+            </div>
+          )}
+          {scheduleType === "monthly" && scheduleMode === "custom" && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {MONTH_ABBR_TH.map((label, i) => {
+                const m = i + 1;
+                const active = customMonths.includes(m);
+                return (
+                  <button key={m} onClick={() => toggleCustomMonth(m)} style={{ background: active ? C.purple : C.graySoft, color: active ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold">{label}</button>
+                );
+              })}
             </div>
           )}
         </Field>
@@ -1743,8 +1828,7 @@ function InvestSummary({ savings }) {
       const [y, m] = s.date.split("-").map(Number);
       if (y === year) totals[m - 1] += Number(s.amount);
     });
-    const thMonths = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
-    return totals.map((v, i) => ({ label: thMonths[i], value: v }));
+    return totals.map((v, i) => ({ label: MONTH_ABBR_TH[i], value: v }));
   }, [invested, year]);
   const yearTotal = monthlyData.reduce((a, m) => a + m.value, 0);
 
@@ -1952,7 +2036,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
 /* ---------------------------------------------------------------- */
 /*  Home Loan Planning — amortization monitor & fix-cost sync        */
 /* ---------------------------------------------------------------- */
-function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverrides }) {
+function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverrides, planFixCostItems, setPlanFixCostItems }) {
   const [editing, setEditing] = useState(!homeLoan.active);
   const [name, setName] = useState(homeLoan.name);
   const [principal, setPrincipal] = useState(homeLoan.principal || "");
@@ -1963,6 +2047,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
   const [newRate, setNewRate] = useState("");
   const [newRateMonth, setNewRateMonth] = useState(ymOf(new Date()));
   const [viewYear, setViewYear] = useState(new Date().getFullYear());
+  const [justSynced, setJustSynced] = useState(false);
 
   const schedule = useMemo(() => buildAmortizationSchedule(homeLoan, planOverrides), [homeLoan, planOverrides]);
   const currentYm = ymOf(new Date());
@@ -1975,6 +2060,24 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
   const interestRemaining = schedule.filter((r) => r.ym >= currentYm).reduce((a, r) => a + r.interest, 0);
   const currentRate = rateForMonth(homeLoan.rateChanges, currentYm);
   const hitCap = homeLoan.active && schedule.length >= 600;
+  const syncedInFixCost = planFixCostItems.some((i) => i.id === HOME_LOAN_FIXCOST_ID);
+
+  function syncNow() {
+    const itemName = homeLoan.name || "ผ่อนบ้าน";
+    const item = {
+      id: HOME_LOAN_FIXCOST_ID, name: itemName, type: "ค่าเช่า/ผ่อนบ้าน",
+      amount: homeLoan.payment, recurring: true, startMonth: homeLoan.startMonth, endMonth: payoffYm, auto: true,
+    };
+    setPlanFixCostItems((prev) => {
+      let next = prev.filter((i) => i.id === HOME_LOAN_FIXCOST_ID || i.auto || i.name.trim().toLowerCase() !== itemName.trim().toLowerCase());
+      const idx = next.findIndex((i) => i.id === HOME_LOAN_FIXCOST_ID);
+      if (idx === -1) return [...next, item];
+      next = [...next]; next[idx] = { ...next[idx], ...item };
+      return next;
+    });
+    setJustSynced(true);
+    setTimeout(() => setJustSynced(false), 2500);
+  }
 
   function save() {
     const p = parseFloat(principal), pay = parseFloat(payment), rate = parseFloat(initialRate);
@@ -2053,6 +2156,15 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
           <button onClick={() => setEditing(true)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><Settings size={14} /></button>
           <button onClick={resetLoan} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><Trash2 size={14} color={C.coral} /></button>
         </div>
+      </div>
+
+      <div style={{ background: syncedInFixCost ? C.tealSoft : C.coralSoft }} className="rounded-2xl px-4 py-3 flex items-center gap-3 flex-wrap">
+        <span style={{ color: syncedInFixCost ? C.teal : C.coral }} className="text-sm font-semibold flex-1">
+          {syncedInFixCost ? "✅ ซิงก์เข้ารายการ Fix Cost แล้ว" : "⚠️ ยังไม่พบในรายการ Fix Cost"}
+        </span>
+        <button onClick={syncNow} style={{ background: syncedInFixCost ? C.teal : C.coral, color: "#fff" }} className="px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap">
+          {justSynced ? "ซิงก์แล้ว ✓" : "ซิงก์ตอนนี้"}
+        </button>
       </div>
 
       <div style={{ background: `linear-gradient(135deg, ${C.brown}, #A85F2C)` }} className="rounded-3xl p-5 text-white shadow-sm">
