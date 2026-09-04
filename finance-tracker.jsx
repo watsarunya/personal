@@ -589,9 +589,10 @@ function Overview({ transactions, alerts, onDismissAlert, badges, setTab }) {
 
   const byCat = useMemo(() => {
     const m = {};
-    filtered.filter((t) => t.type === "expense" && t.payment !== "credit").forEach((t) => { m[t.category] = (m[t.category] || 0) + Number(t.amount); });
+    filtered.filter((t) => t.type === "expense").forEach((t) => { m[t.category] = (m[t.category] || 0) + Number(t.amount); });
     return Object.entries(m).map(([k, v]) => ({ name: catMeta(EXPENSE_CATEGORIES, k).label, value: v, avgPerDay: v / daysInPeriod, color: CAT_COLOR[k] })).sort((a, b) => b.value - a.value);
   }, [filtered, daysInPeriod]);
+  const byCatTotal = byCat.reduce((a, c) => a + c.value, 0);
 
   function shift(delta) {
     const d = new Date(ref);
@@ -648,9 +649,9 @@ function Overview({ transactions, alerts, onDismissAlert, badges, setTab }) {
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-1">
           <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold">สัดส่วนรายจ่ายตามหมวดหมู่</p>
-          {expense > 0 && <span className="text-xs font-bold" style={{ color: C.inkSoft }}>เฉลี่ยรวม {fmtTHB(expense / daysInPeriod)}/วัน</span>}
+          {byCatTotal > 0 && <span className="text-xs font-bold" style={{ color: C.inkSoft }}>เฉลี่ยรวม {fmtTHB(byCatTotal / daysInPeriod)}/วัน</span>}
         </div>
-        {byCat.length > 0 && <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>คำนวณจาก {daysInPeriod} วันในช่วงนี้</p>}
+        {byCat.length > 0 && <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>คำนวณจาก {daysInPeriod} วันในช่วงนี้ · รวมทุกช่องทางชำระเงิน (เงินสด/โอน/บัตรเครดิต)</p>}
         {byCat.length === 0 ? <EmptyNote text="ยังไม่มีรายจ่ายในช่วงนี้" /> : (
           <div className="flex flex-col sm:flex-row items-center gap-4">
             <div style={{ width: "100%", maxWidth: 200, height: 190 }}>
