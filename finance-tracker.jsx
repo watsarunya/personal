@@ -9,7 +9,7 @@ import {
   Clock, Repeat, Tag, PieChart as PieChartIcon, Store, Bike, Package, Pencil
 } from "lucide-react";
 import {
-  PieChart, Pie, Cell, Tooltip, ResponsiveContainer
+  PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid
 } from "recharts";
 
 /* ---------------------------------------------------------------- */
@@ -88,7 +88,8 @@ const FIXCOST_TYPE_PRESETS = ["ค่าเช่า/ผ่อนบ้าน", 
 const INVEST_CATEGORY_PRESETS = ["หุ้น", "กองทุนรวม", "ทองคำ", "คริปโทเคอร์เรนซี", "พันธบัตร/ตราสารหนี้", "ประกันสะสมทรัพย์", "อสังหาริมทรัพย์", "อื่นๆ"];
 const INVEST_PALETTE = [C.purple, C.teal, C.blue, C.coral, C.pink, C.yellowDeep, "#9B7BF0", C.gray];
 
-function investItemAmount(item, totalPool) {
+function investItemAmount(item, totalPool, ym, overrides) {
+  if (ym && overrides?.[ym]?.[item.id] !== undefined) return overrides[ym][item.id];
   return item.mode === "percent" ? (Number(totalPool) || 0) * (Number(item.value) || 0) / 100 : (Number(item.value) || 0);
 }
 function investItemStatus(item) {
@@ -213,7 +214,7 @@ export default function FinanceTracker() {
   const [cardSettings, setCardSettings] = useState(
     Object.fromEntries(CREDIT_CARDS.map((c) => [c, { cutoffDay: 25, dueDay: 5 }]))
   );
-  const [investPlan, setInvestPlan] = useState({ totalPool: 0, items: [] });
+  const [investPlan, setInvestPlan] = useState({ totalPool: 0, items: [], overrides: {} });
   const [holdings, setHoldings] = useState([]);
   const [homeLoan, setHomeLoan] = useState({
     active: false, name: "", principal: 0, startMonth: ymOf(new Date()),
@@ -249,7 +250,7 @@ export default function FinanceTracker() {
               return next;
             });
           }
-          if (data.investPlan) setInvestPlan(data.investPlan);
+          if (data.investPlan) setInvestPlan((p) => ({ ...p, ...data.investPlan, overrides: data.investPlan.overrides || {} }));
           setHoldings(data.holdings || []);
           if (data.homeLoan) setHomeLoan((prev) => ({ ...prev, ...data.homeLoan }));
           if (data.dismissedAlerts) setDismissedAlerts(data.dismissedAlerts);
@@ -282,14 +283,24 @@ export default function FinanceTracker() {
       }
       const schedule = buildAmortizationSchedule(homeLoan, planOverrides);
       const payoffYm = schedule.length ? schedule[schedule.length - 1].ym : null;
+      const itemName = homeLoan.name || "ผ่อนบ้าน";
       const item = {
-        id: HOME_LOAN_FIXCOST_ID, name: homeLoan.name || "ผ่อนบ้าน", type: "ค่าเช่า/ผ่อนบ้าน",
+        id: HOME_LOAN_FIXCOST_ID, name: itemName, type: "ค่าเช่า/ผ่อนบ้าน",
         amount: homeLoan.payment, recurring: true, startMonth: homeLoan.startMonth, endMonth: payoffYm, auto: true,
       };
-      if (idx === -1) return [...prev, item];
-      const existing = prev[idx];
-      if (existing.amount !== item.amount || existing.endMonth !== item.endMonth || existing.name !== item.name || existing.startMonth !== item.startMonth) {
-        const next = [...prev]; next[idx] = { ...existing, ...item }; return next;
+      let next = [...prev];
+      // Remove any leftover manually-added item with the exact same name (from
+      // before this loan was set up here) so it doesn't show up twice.
+      next = next.filter((i) => {
+        if (i.id === HOME_LOAN_FIXCOST_ID) return true;
+        if (i.auto) return true;
+        return i.name.trim().toLowerCase() !== itemName.trim().toLowerCase();
+      });
+      const newIdx = next.findIndex((i) => i.id === HOME_LOAN_FIXCOST_ID);
+      if (newIdx === -1) return [...next, item];
+      const existing = next[newIdx];
+      if (existing.amount !== item.amount || existing.endMonth !== item.endMonth || existing.name !== item.name || existing.startMonth !== item.startMonth || next.length !== prev.length) {
+        next[newIdx] = { ...existing, ...item }; return next;
       }
       return prev;
     });
@@ -967,7 +978,7 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
       )}
 
       {subTab === "plan" && (
-        <InvestmentPlanPanel investPlan={investPlan} setInvestPlan={setInvestPlan} setSavings={setSavings} />
+        <InvestmentPlanPanel investPlan={investPlan} setInvestPlan={setInvestPlan} setSavings={setSavings} savings={savings} />
       )}
 
       {subTab === "holdings" && (
@@ -1333,6 +1344,8 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
     const amt = parseFloat(amount);
     if (!name.trim()) { setError("กรอกชื่อรายการก่อนนะครับ"); return; }
     if (!amt || amt <= 0) { setError("กรอกจำนวนเงินให้มากกว่า 0"); return; }
+    const collision = items.find((i) => i.auto && i.name.trim().toLowerCase() === name.trim().toLowerCase());
+    if (collision) { setError(`มีรายการ "${collision.name}" ที่ซิงก์อัตโนมัติอยู่แล้ว ไม่ต้องเพิ่มซ้ำ — แก้ไขยอดของรายการเดิมได้เลย`); return; }
     setError("");
     const item = { id: uid(), name: name.trim(), type: type.trim() || "อื่นๆ", amount: amt, recurring };
     if (!recurring) item.month = ym;
@@ -1374,7 +1387,10 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
             return (
               <div key={item.id} style={{ background: C.bg }} className="flex items-center gap-2 px-3 py-2.5 rounded-2xl">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-bold truncate">{item.name}</p>
+                  <p className="text-sm font-bold truncate flex items-center gap-1.5">
+                    {item.name}
+                    {item.auto && <span style={{ background: C.brownSoft, color: C.brown }} className="text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap">ซิงก์จากผ่อนบ้าน</span>}
+                  </p>
                   <p className="text-[11px] flex items-center gap-1 flex-wrap" style={{ color: C.inkSoft }}>
                     <span>{item.type}</span><span>·</span><span>{item.recurring ? "ทุกเดือน" : `เฉพาะ ${monthLabel(item.month)}`}</span>
                     {overridden && <span style={{ color }} className="font-bold">· แก้ไขเฉพาะเดือนนี้</span>}
@@ -1385,7 +1401,11 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
                 {overridden && (
                   <button onClick={() => resetOverride(item)} title="รีเซ็ตเป็นค่าเริ่มต้น" style={{ color: C.inkSoft }} className="p-1"><RotateCcw size={13} /></button>
                 )}
-                <button onClick={() => remove(item.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={13} /></button>
+                {item.auto ? (
+                  <span title="จัดการรายการนี้ได้ที่แท็บ 'ผ่อนบ้าน'" style={{ color: C.graySoft }} className="p-1"><Lock size={13} /></span>
+                ) : (
+                  <button onClick={() => remove(item.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={13} /></button>
+                )}
               </div>
             );
           })}
@@ -1438,8 +1458,9 @@ function freqLabel(n) {
   return n === 1 ? "ทุกเดือน" : `ทุก ${n} เดือน`;
 }
 
-function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings }) {
+function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings }) {
   const { totalPool, items } = investPlan;
+  const [subView, setSubView] = useState("items");
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
   const [mode, setMode] = useState("percent");
@@ -1470,7 +1491,8 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings }) {
     setInvestPlan((p) => ({ ...p, items: p.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
   }
   function markExecuted(item) {
-    const amt = investItemAmount(item, totalPool);
+    const ym = item.date.slice(0, 7);
+    const amt = investItemAmount(item, totalPool, ym, investPlan.overrides);
     setSavings((prev) => [{ id: uid(), kind: "investment", name: item.name, amount: amt, date: item.date, target: null, note: item.category }, ...prev]);
     if (item.recurring) {
       updateItem(item.id, { date: addMonthsToDate(item.date, item.intervalMonths || 1), executed: false });
@@ -1495,6 +1517,14 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings }) {
         </div>
       </div>
 
+      <div className="flex rounded-full overflow-hidden p-1 w-fit" style={{ background: C.graySoft }}>
+        <button onClick={() => setSubView("items")} style={{ background: subView === "items" ? C.card : "transparent" }} className="px-3.5 py-1.5 text-xs font-bold rounded-full shadow-sm">รายการ</button>
+        <button onClick={() => setSubView("monthly")} style={{ background: subView === "monthly" ? C.card : "transparent" }} className="px-3.5 py-1.5 text-xs font-bold rounded-full flex items-center gap-1"><Calendar size={12} />แผนรายเดือน</button>
+        <button onClick={() => setSubView("summary")} style={{ background: subView === "summary" ? C.card : "transparent" }} className="px-3.5 py-1.5 text-xs font-bold rounded-full flex items-center gap-1"><PieChartIcon size={12} />สรุป</button>
+      </div>
+
+      {subView === "items" && (
+      <>
       {pieData.length > 0 && (
         <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
           <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">สัดส่วนพอร์ตการลงทุน</p>
@@ -1526,7 +1556,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings }) {
         {items.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุน — เพิ่มรายการแรกด้านล่าง" /> : (
           <div className="flex flex-col gap-2 mb-1">
             {items.map((item) => {
-              const amt = investItemAmount(item, totalPool);
+              const amt = investItemAmount(item, totalPool, item.date.slice(0, 7), investPlan.overrides);
               const st = investItemStatus(item);
               const chipColor = { hot: C.coral, warn: C.yellowDeep, done: C.teal, ok: C.gray }[st.level];
               const chipBg = { hot: C.coralSoft, warn: C.yellowSoft, done: C.tealSoft, ok: C.graySoft }[st.level];
@@ -1618,6 +1648,173 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings }) {
         </Field>
         <button onClick={addItem} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="mt-4 flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> เพิ่มรายการลงทุน</button>
       </div>
+      </>
+      )}
+
+      {subView === "monthly" && (
+        <InvestMonthlyPlanner investPlan={investPlan} setInvestPlan={setInvestPlan} />
+      )}
+
+      {subView === "summary" && (
+        <InvestSummary savings={savings} />
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/*  Investment monthly planner — pick which item invests how much,   */
+/*  per specific month                                                */
+/* ---------------------------------------------------------------- */
+function InvestMonthlyPlanner({ investPlan, setInvestPlan }) {
+  const { totalPool, items, overrides } = investPlan;
+  const [ym, setYm] = useState(ymOf(new Date()));
+
+  function setOverride(itemId, val) {
+    const amt = parseFloat(val);
+    if (isNaN(amt) || amt < 0) return;
+    setInvestPlan((p) => ({ ...p, overrides: { ...(p.overrides || {}), [ym]: { ...((p.overrides || {})[ym] || {}), [itemId]: amt } } }));
+  }
+  function resetOverride(itemId) {
+    setInvestPlan((p) => {
+      const next = { ...(p.overrides || {}) };
+      if (!next[ym] || !(itemId in next[ym])) return p;
+      next[ym] = { ...next[ym] };
+      delete next[ym][itemId];
+      return { ...p, overrides: next };
+    });
+  }
+
+  const rows = items.map((item) => ({ item, amt: investItemAmount(item, totalPool, ym, overrides), overridden: overrides?.[ym]?.[item.id] !== undefined }));
+  const monthTotal = rows.reduce((a, r) => a + r.amt, 0);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <button onClick={() => setYm((p) => addMonths(p, -1))} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronLeft size={16} /></button>
+        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold text-lg">{monthLabel(ym)}</p>
+        <button onClick={() => setYm((p) => addMonths(p, 1))} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronRight size={16} /></button>
+      </div>
+
+      <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-5 text-white shadow-sm">
+        <p className="text-xs font-semibold opacity-90 mb-1">แผนลงทุนรวมเดือนนี้</p>
+        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(monthTotal)}</p>
+      </div>
+
+      <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
+        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">กำหนดยอดแต่ละรายการสำหรับเดือนนี้</p>
+        {rows.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุน — ไปเพิ่มที่แท็บ 'รายการ' ก่อน" /> : (
+          <div className="flex flex-col gap-2">
+            {rows.map(({ item, amt, overridden }) => (
+              <div key={item.id} style={{ background: C.bg }} className="flex items-center gap-2.5 px-3.5 py-3 rounded-2xl">
+                <div style={{ background: C.purple }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><TrendingUp size={15} color="#fff" /></div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold truncate">{item.name}</p>
+                  <p className="text-[11px] flex items-center gap-1" style={{ color: C.inkSoft }}>
+                    <Tag size={10} />{item.category}{overridden && <span style={{ color: C.purple }} className="font-bold">· กำหนดเฉพาะเดือนนี้</span>}
+                  </p>
+                </div>
+                <input type="number" min="0" defaultValue={amt} key={ym + item.id + amt}
+                  onBlur={(e) => setOverride(item.id, e.target.value)} style={{ ...inputStyle, width: 100 }} />
+                {overridden && (
+                  <button onClick={() => resetOverride(item.id)} title="รีเซ็ตเป็นค่าเริ่มต้น" style={{ color: C.inkSoft }} className="p-1"><RotateCcw size={13} /></button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="text-[11px] mt-3" style={{ color: C.inkSoft }}>ปรับยอดของแต่ละรายการเฉพาะเดือนนี้ได้อิสระ (บางเดือนจะไม่ลงบางตัว ก็ใส่ 0 ได้) ยอดนี้จะถูกใช้ตอนกดติ๊กว่า "ลงทุนแล้ว" ที่แท็บ "รายการ" เมื่อถึงกำหนดของเดือนนี้</p>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/*  Investment summary — actual invested amounts by month / by year  */
+/* ---------------------------------------------------------------- */
+function InvestSummary({ savings }) {
+  const [mode, setMode] = useState("monthly");
+  const [year, setYear] = useState(new Date().getFullYear());
+  const invested = useMemo(() => savings.filter((s) => s.kind === "investment"), [savings]);
+
+  const monthlyData = useMemo(() => {
+    const totals = Array(12).fill(0);
+    invested.forEach((s) => {
+      const [y, m] = s.date.split("-").map(Number);
+      if (y === year) totals[m - 1] += Number(s.amount);
+    });
+    const thMonths = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+    return totals.map((v, i) => ({ label: thMonths[i], value: v }));
+  }, [invested, year]);
+  const yearTotal = monthlyData.reduce((a, m) => a + m.value, 0);
+
+  const yearlyData = useMemo(() => {
+    const totals = {};
+    invested.forEach((s) => { const y = s.date.slice(0, 4); totals[y] = (totals[y] || 0) + Number(s.amount); });
+    return Object.entries(totals).sort(([a], [b]) => a.localeCompare(b)).map(([y, v]) => ({ label: String(Number(y) + 543), value: v }));
+  }, [invested]);
+  const allTimeTotal = yearlyData.reduce((a, y) => a + y.value, 0);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex rounded-full overflow-hidden p-1 w-fit" style={{ background: C.graySoft }}>
+        <button onClick={() => setMode("monthly")} style={{ background: mode === "monthly" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full shadow-sm">รายเดือน</button>
+        <button onClick={() => setMode("yearly")} style={{ background: mode === "yearly" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full">รายปี</button>
+      </div>
+
+      {mode === "monthly" ? (
+        <>
+          <div className="flex items-center justify-between">
+            <button onClick={() => setYear((y) => y - 1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronLeft size={16} /></button>
+            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold text-lg">ปี {year + 543}</p>
+            <button onClick={() => setYear((y) => y + 1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronRight size={16} /></button>
+          </div>
+          <div style={{ background: `linear-gradient(135deg, ${C.teal}, #22A184)` }} className="rounded-3xl p-5 text-white shadow-sm">
+            <p className="text-xs font-semibold opacity-90 mb-1">รวมเงินลงทุนจริงปีนี้</p>
+            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(yearTotal)}</p>
+          </div>
+          <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
+            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแต่ละเดือน</p>
+            {yearTotal === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุนจริงในปีนี้" /> : (
+              <div style={{ width: "100%", height: 220 }}>
+                <ResponsiveContainer>
+                  <BarChart data={monthlyData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.graySoft} vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 10 }} width={40} />
+                    <Tooltip formatter={(v) => fmtTHB(v)} />
+                    <Bar dataKey="value" fill={C.purple} radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ background: `linear-gradient(135deg, ${C.blue}, #2E93C4)` }} className="rounded-3xl p-5 text-white shadow-sm">
+            <p className="text-xs font-semibold opacity-90 mb-1">รวมเงินลงทุนจริงทั้งหมด</p>
+            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(allTimeTotal)}</p>
+          </div>
+          <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
+            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแยกตามปี</p>
+            {yearlyData.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุนจริง" /> : (
+              <div style={{ width: "100%", height: 220 }}>
+                <ResponsiveContainer>
+                  <BarChart data={yearlyData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.graySoft} vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 10 }} width={40} />
+                    <Tooltip formatter={(v) => fmtTHB(v)} />
+                    <Bar dataKey="value" fill={C.blue} radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+      <p className="text-[11px] px-1" style={{ color: C.inkSoft }}>ยอดสรุปนี้คำนวณจากรายการที่กดติ๊ก "ลงทุนแล้ว" จริง (บันทึกอยู่ในหน้า "รายการออม-ลงทุน") ไม่ใช่ยอดที่วางแผนไว้เฉยๆ</p>
     </div>
   );
 }
