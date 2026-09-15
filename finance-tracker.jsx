@@ -44,45 +44,66 @@ const FONT_IMPORT = `
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap');
 `;
 
-const CAT_COLOR = {
-  food: C.coral, drink: C.blue, car: C.purple, beauty: C.pink,
-  home: C.yellowDeep, cat: "#9B7BF0", exercise: C.teal, others: C.gray,
-  seven11: C.brown, grab: "#1DB954", lineman: "#5B6BC0", creditcard: "#6B4EA6",
-  salary: C.teal, extra: C.blue, other_income: C.gray,
+const ICON_LIBRARY = {
+  Utensils, Coffee, Car, Sparkles, Home, Cat, Dumbbell, Store, Bike, Package,
+  CreditCard, MoreHorizontal, Wallet, PiggyBank, Bell, Calendar, Star, Flame,
+  Landmark, Rocket, ShieldCheck, Award, Tag, Clock, Percent, TrendingUp,
+  TrendingDown, Banknote, ArrowLeftRight, ClipboardList, Settings,
 };
-const CAT_SOFT = {
-  food: C.coralSoft, drink: C.blueSoft, car: C.purpleSoft, beauty: C.pinkSoft,
-  home: C.yellowSoft, cat: "#EEE6FF", exercise: C.tealSoft, others: C.graySoft,
-  seven11: C.brownSoft, grab: "#DBF5E5", lineman: "#E5E7F7", creditcard: "#EAE3F5",
-  salary: C.tealSoft, extra: C.blueSoft, other_income: C.graySoft,
-};
+const ICON_NAMES = Object.keys(ICON_LIBRARY);
+function resolveIcon(name) { return ICON_LIBRARY[name] || MoreHorizontal; }
+const CATEGORY_COLOR_PALETTE = ["#FF7A59", "#4FB6E8", "#6C5CE7", "#FF6B9D", "#F5AF00", "#9B7BF0", "#2ECC9B", "#C97B3E", "#1DB954", "#5B6BC0", "#6B4EA6", "#B7BACB"];
 
-const FOOD_SUBCATEGORIES = [
-  { key: "seven11", label: "7-Eleven", icon: Store },
-  { key: "grab", label: "Grab", icon: Bike },
-  { key: "drink", label: "เครื่องดื่ม", icon: Coffee },
-  { key: "lineman", label: "Lineman", icon: Package },
+const DEFAULT_EXPENSE_CATEGORIES = [
+  { key: "food", label: "อาหาร", icon: "Utensils", color: "#FF7A59", subcategories: [
+    { key: "seven11", label: "7-Eleven", icon: "Store", color: "#C97B3E" },
+    { key: "grab", label: "Grab", icon: "Bike", color: "#1DB954" },
+    { key: "drink", label: "เครื่องดื่ม", icon: "Coffee", color: "#4FB6E8" },
+    { key: "lineman", label: "Lineman", icon: "Package", color: "#5B6BC0" },
+  ] },
+  { key: "car", label: "รถยนต์", icon: "Car", color: "#6C5CE7" },
+  { key: "beauty", label: "ความงาม", icon: "Sparkles", color: "#FF6B9D" },
+  { key: "home", label: "บ้าน", icon: "Home", color: "#F5AF00" },
+  { key: "cat", label: "แมว", icon: "Cat", color: "#9B7BF0" },
+  { key: "exercise", label: "ออกกำลังกาย", icon: "Dumbbell", color: "#2ECC9B" },
+  { key: "creditcard", label: "Credit Card", icon: "CreditCard", color: "#6B4EA6" },
+  { key: "others", label: "อื่นๆ", icon: "MoreHorizontal", color: "#B7BACB" },
 ];
-const EXPENSE_CATEGORIES = [
-  { key: "food", label: "อาหาร", icon: Utensils, subcategories: FOOD_SUBCATEGORIES },
-  { key: "car", label: "รถยนต์", icon: Car },
-  { key: "beauty", label: "ความงาม", icon: Sparkles },
-  { key: "home", label: "บ้าน", icon: Home },
-  { key: "cat", label: "แมว", icon: Cat },
-  { key: "exercise", label: "ออกกำลังกาย", icon: Dumbbell },
-  { key: "creditcard", label: "Credit Card", icon: CreditCard },
-  { key: "others", label: "อื่นๆ", icon: MoreHorizontal },
+const DEFAULT_CREDIT_CARDS = [
+  { name: "SCB", icon: "Landmark", color: "#6C5CE7" },
+  { name: "JCB", icon: "CreditCard", color: "#FF7A59" },
+  { name: "Shopee", icon: "Store", color: "#FF6B9D" },
+  { name: "Krungsri", icon: "Landmark", color: "#F5AF00" },
+  { name: "Kbank", icon: "Landmark", color: "#2ECC9B" },
+  { name: "Premier", icon: "Award", color: "#9B7BF0" },
+  { name: "Prefered", icon: "Star", color: "#4FB6E8" },
 ];
-function subcategoryMeta(catKey, subKey) {
-  const cat = EXPENSE_CATEGORIES.find((c) => c.key === catKey);
+function cardMeta(creditCards, name) {
+  return creditCards.find((c) => c.name === name) || { name, icon: "CreditCard", color: "#6C5CE7" };
+}
+
+function subcategoryMeta(categories, catKey, subKey) {
+  const cat = categories.find((c) => c.key === catKey);
   return cat?.subcategories?.find((s) => s.key === subKey) || null;
 }
+function resolveMainCategory(categories, key) {
+  for (const c of categories) {
+    if (c.subcategories && c.subcategories.some((s) => s.key === key)) return c.key;
+  }
+  return key;
+}
+function categoryColor(categories, key) {
+  for (const c of categories) {
+    if (c.key === key) return c.color;
+    if (c.subcategories) { const s = c.subcategories.find((s) => s.key === key); if (s) return s.color; }
+  }
+  return C.gray;
+}
 const INCOME_CATEGORIES = [
-  { key: "salary", label: "เงินเดือน", icon: Landmark },
-  { key: "extra", label: "รายได้เสริม", icon: TrendingUp },
-  { key: "other_income", label: "อื่นๆ", icon: MoreHorizontal },
+  { key: "salary", label: "เงินเดือน", icon: "Landmark", color: "#2ECC9B" },
+  { key: "extra", label: "รายได้เสริม", icon: "TrendingUp", color: "#4FB6E8" },
+  { key: "other_income", label: "อื่นๆ", icon: "MoreHorizontal", color: "#B7BACB" },
 ];
-const CREDIT_CARDS = ["SCB", "JCB", "Shopee", "Krungsri", "Kbank", "Premier", "Prefered"];
 
 const TAB_COLOR = {
   overview: C.purple, transactions: C.coral, savings: C.teal,
@@ -219,8 +240,10 @@ export default function FinanceTracker() {
     saving: { mode: "percent", value: 10 },
     invest: { mode: "percent", value: 10 },
   });
+  const [expenseCategories, setExpenseCategories] = useState(DEFAULT_EXPENSE_CATEGORIES);
+  const [creditCards, setCreditCards] = useState(DEFAULT_CREDIT_CARDS);
   const [cardSettings, setCardSettings] = useState(
-    Object.fromEntries(CREDIT_CARDS.map((c) => [c, { cutoffDay: 25, dueDay: 5 }]))
+    Object.fromEntries(DEFAULT_CREDIT_CARDS.map((c) => [c.name, { cutoffDay: 25, dueDay: 5 }]))
   );
   const [investPlan, setInvestPlan] = useState({ totalPool: 0, items: [], overrides: {} });
   const [holdings, setHoldings] = useState([]);
@@ -232,6 +255,7 @@ export default function FinanceTracker() {
   const [profiles, setProfiles] = useState([]);
   const [activeProfileId, setActiveProfileId] = useState(null);
   const [showProfilePicker, setShowProfilePicker] = useState(false);
+  const [showSettingsPage, setShowSettingsPage] = useState(false);
   const [ready, setReady] = useState(false);
   const loadedRef = useRef(false);
 
@@ -266,6 +290,8 @@ export default function FinanceTracker() {
           if (data.homeLoan) setHomeLoan((prev) => ({ ...prev, ...data.homeLoan }));
           if (data.dismissedAlerts) setDismissedAlerts(data.dismissedAlerts);
           setProfiles(data.profiles || []);
+          if (data.expenseCategories) setExpenseCategories(data.expenseCategories);
+          if (data.creditCards) setCreditCards(data.creditCards.map((c) => typeof c === "string" ? { name: c, icon: "CreditCard", color: "#6C5CE7" } : c));
         }
       } catch (e) { /* fresh start */ }
       finally { loadedRef.current = true; setReady(true); }
@@ -278,12 +304,12 @@ export default function FinanceTracker() {
       try {
         await window.storage.set(STORAGE_KEY, JSON.stringify({
           transactions, savings, debts, budgets,
-          planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles,
+          planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards,
         }));
       } catch (e) { /* ignore */ }
     }, 250);
     return () => clearTimeout(t);
-  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles]);
+  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards]);
 
   // Sync the home loan installment into Monthly Plan's Fix Cost list automatically
   useEffect(() => {
@@ -348,15 +374,18 @@ export default function FinanceTracker() {
         if (idx === -1) {
           next.push({ id, name: label, amount: amt, dueDate: dueDateStr, recurring: false, paid: false, auto: true, card });
           changed = true;
-        } else if (!next[idx].paid && (next[idx].amount !== amt || next[idx].dueDate !== dueDateStr)) {
+        } else if (!next[idx].paid && !next[idx].amountOverridden && (next[idx].amount !== amt || next[idx].dueDate !== dueDateStr)) {
           next[idx] = { ...next[idx], amount: amt, dueDate: dueDateStr, name: label };
+          changed = true;
+        } else if (!next[idx].paid && next[idx].amountOverridden && next[idx].name !== label) {
+          next[idx] = { ...next[idx], name: label };
           changed = true;
         }
       });
       next = next.filter((d) => {
         if (!d.auto) return true;
         const statementYm = d.id.slice(("cc-" + d.card + "-").length);
-        if (!(d.card + "|" + statementYm in totals) && !d.paid) { changed = true; return false; }
+        if (!(d.card + "|" + statementYm in totals) && !d.paid && !d.amountOverridden) { changed = true; return false; }
         return true;
       });
       return changed ? next : prev;
@@ -373,9 +402,9 @@ export default function FinanceTracker() {
   const monthKey = ymOf(new Date());
   const monthSpend = useMemo(() => {
     const m = {};
-    transactions.forEach((t) => { if (t.type === "expense" && t.date.slice(0, 7) === monthKey) m[t.category] = (m[t.category] || 0) + Number(t.amount); });
+    transactions.forEach((t) => { if (t.type === "expense" && t.date.slice(0, 7) === monthKey) { const k = resolveMainCategory(expenseCategories, t.category); m[k] = (m[k] || 0) + Number(t.amount); } });
     return m;
-  }, [transactions, monthKey]);
+  }, [transactions, monthKey, expenseCategories]);
   const totalBudget = Object.values(budgets).reduce((a, b) => a + (Number(b) || 0), 0);
   const totalSpentBudgeted = Object.entries(budgets).reduce((a, [k]) => a + (monthSpend[k] || 0), 0);
   const budgetPct = totalBudget > 0 ? Math.min(100, Math.round((totalSpentBudgeted / totalBudget) * 100)) : null;
@@ -386,10 +415,10 @@ export default function FinanceTracker() {
       if (!limit) return;
       const spent = monthSpend[cat] || 0;
       if (spent >= limit) {
-        const meta = catMeta(EXPENSE_CATEGORIES, cat);
+        const meta = catMeta(expenseCategories, cat);
         list.push({ id: "b-" + cat, level: "hot", text: `ใช้จ่ายหมวด "${meta.label}" ครบตามงบที่ตั้งไว้แล้ว (${fmtTHB(spent)} / ${fmtTHB(limit)})` });
       } else if (spent >= limit * 0.8) {
-        const meta = catMeta(EXPENSE_CATEGORIES, cat);
+        const meta = catMeta(expenseCategories, cat);
         list.push({ id: "b-" + cat, level: "warn", text: `หมวด "${meta.label}" ใกล้เต็มงบแล้ว (${fmtTHB(spent)} / ${fmtTHB(limit)})` });
       }
     });
@@ -413,15 +442,28 @@ export default function FinanceTracker() {
       else if (st.level === "warn") list.push({ id: "inv-" + item.id, level: "warn", text: `ใกล้ถึงกำหนดลงทุน "${item.name}" ${st.text} (${fmtTHB(amt)})` });
     });
     return list;
-  }, [budgets, monthSpend, debts, planIncomeItems, planFixCostItems, planOverrides, monthKey, investPlan]);
+  }, [budgets, monthSpend, debts, planIncomeItems, planFixCostItems, planOverrides, monthKey, investPlan, expenseCategories]);
 
   const visibleAlerts = useMemo(
     () => alerts.filter((a) => !dismissedAlerts[a.id] || dismissedAlerts[a.id] < todayStr()),
     [alerts, dismissedAlerts]
   );
+  const debtAlerts = useMemo(() => visibleAlerts.filter((a) => a.id.startsWith("d-")), [visibleAlerts]);
   function dismissAlert(a) {
     setDismissedAlerts((prev) => ({ ...prev, [a.id]: addMonthsToDate(todayStr(), 1) }));
   }
+
+  // Clear the Debts tab notification badge once the user actually visits it,
+  // instead of leaving it stuck on even after they've seen the reminders.
+  useEffect(() => {
+    if (!loadedRef.current || tab !== "debts" || debtAlerts.length === 0) return;
+    setDismissedAlerts((prev) => {
+      const next = { ...prev };
+      debtAlerts.forEach((a) => { next[a.id] = addMonthsToDate(todayStr(), 1); });
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   if (!ready) {
     return (
@@ -436,22 +478,23 @@ export default function FinanceTracker() {
     <div style={{ background: C.bg, fontFamily: "'Inter', sans-serif", color: C.ink }} className="w-full min-h-full pb-24">
       <style>{FONT_IMPORT}</style>
       <Header streak={streak} points={points} alertCount={visibleAlerts.length} budgetPct={budgetPct}
-        activeProfile={profileById(profiles, activeProfileId)} onOpenProfilePicker={() => setShowProfilePicker(true)} />
+        activeProfile={profileById(profiles, activeProfileId)} onOpenProfilePicker={() => setShowProfilePicker(true)}
+        onOpenSettings={() => setShowSettingsPage(true)} />
       <main className="px-4 md:px-6 max-w-2xl mx-auto flex flex-col gap-4 mt-4">
         {tab === "overview" && (
-          <Overview transactions={transactions} alerts={visibleAlerts} onDismissAlert={dismissAlert} setTab={setTab} />
+          <Overview transactions={transactions} alerts={visibleAlerts} onDismissAlert={dismissAlert} setTab={setTab} expenseCategories={expenseCategories} />
         )}
         {tab === "transactions" && (
-          <TransactionsTab transactions={transactions} setTransactions={setTransactions} profiles={profiles} activeProfileId={activeProfileId} budgets={budgets} setTab={setTab} />
+          <TransactionsTab transactions={transactions} setTransactions={setTransactions} profiles={profiles} activeProfileId={activeProfileId} budgets={budgets} setTab={setTab} expenseCategories={expenseCategories} creditCards={creditCards} />
         )}
         {tab === "savings" && (
           <SavingsTab savings={savings} setSavings={setSavings} investPlan={investPlan} setInvestPlan={setInvestPlan} holdings={holdings} setHoldings={setHoldings} />
         )}
         {tab === "debts" && (
-          <DebtsTab debts={debts} setDebts={setDebts} />
+          <DebtsTab debts={debts} setDebts={setDebts} creditCards={creditCards} setTransactions={setTransactions} />
         )}
         {tab === "budgets" && (
-          <BudgetsTab budgets={budgets} setBudgets={setBudgets} monthSpend={monthSpend} />
+          <BudgetsTab budgets={budgets} setBudgets={setBudgets} monthSpend={monthSpend} expenseCategories={expenseCategories} />
         )}
         {tab === "plan" && (
           <MonthlyPlanTab
@@ -461,13 +504,14 @@ export default function FinanceTracker() {
             savingsPlan={savingsPlan} setSavingsPlan={setSavingsPlan}
             cardSettings={cardSettings} setCardSettings={setCardSettings}
             debts={debts} transactions={transactions} setSavings={setSavings}
+            creditCards={creditCards}
           />
         )}
         {tab === "homeLoan" && (
           <HomePlanningTab homeLoan={homeLoan} setHomeLoan={setHomeLoan} planOverrides={planOverrides} setPlanOverrides={setPlanOverrides} planFixCostItems={planFixCostItems} setPlanFixCostItems={setPlanFixCostItems} />
         )}
       </main>
-      <BottomNav tab={tab} setTab={setTab} alertCount={visibleAlerts.length} />
+      <BottomNav tab={tab} setTab={setTab} debtAlertCount={debtAlerts.length} />
       {showProfilePicker && (
         <ProfilePickerModal
           profiles={profiles} setProfiles={setProfiles}
@@ -475,12 +519,20 @@ export default function FinanceTracker() {
           onClose={() => setShowProfilePicker(false)}
         />
       )}
+      {showSettingsPage && (
+        <SettingsPage
+          expenseCategories={expenseCategories} setExpenseCategories={setExpenseCategories}
+          creditCards={creditCards} setCreditCards={setCreditCards}
+          setCardSettings={setCardSettings}
+          onClose={() => setShowSettingsPage(false)}
+        />
+      )}
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- */
-function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenProfilePicker }) {
+function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenProfilePicker, onOpenSettings }) {
   return (
     <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, borderRadius: "0 0 28px 28px" }} className="px-5 pt-6 pb-5 text-white">
       <div className="flex items-center justify-between">
@@ -512,6 +564,9 @@ function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenPr
             <Bell size={16} />
             {alertCount > 0 && <span style={{ background: C.coral, width: 8, height: 8, top: 2, right: 2 }} className="absolute rounded-full" />}
           </div>
+          <button onClick={onOpenSettings} style={{ background: "rgba(255,255,255,0.18)" }} className="p-1.5 rounded-full">
+            <Settings size={16} />
+          </button>
         </div>
       </div>
       {budgetPct !== null && (
@@ -528,29 +583,28 @@ function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenPr
   );
 }
 
-function BottomNav({ tab, setTab, alertCount }) {
+function BottomNav({ tab, setTab, debtAlertCount }) {
   const items = [
-    { key: "overview", label: "ภาพรวม", icon: Wallet },
-    { key: "transactions", label: "รายรับ-จ่าย", icon: ArrowLeftRight },
-    { key: "savings", label: "ออม & ลงทุน", icon: PiggyBank },
-    { key: "debts", label: "หนี้สิน", icon: Bell, badge: alertCount },
-    { key: "budgets", label: "งบประมาณ", icon: TrendingDown },
-    { key: "plan", label: "แผนรายเดือน", icon: ClipboardList },
-    { key: "homeLoan", label: "ผ่อนบ้าน", icon: Home },
+    { key: "overview", label: "Overview", icon: Wallet },
+    { key: "transactions", label: "Transactions", icon: ArrowLeftRight },
+    { key: "savings", label: "Savings", icon: PiggyBank },
+    { key: "debts", label: "Debts", icon: Bell, badge: debtAlertCount },
+    { key: "budgets", label: "Budget", icon: TrendingDown },
+    { key: "plan", label: "Fix Cost", icon: ClipboardList },
+    { key: "homeLoan", label: "Home Loan", icon: Home },
   ];
   return (
-    <div style={{ background: C.card, borderTop: `1px solid ${C.graySoft}`, paddingBottom: "max(6px, env(safe-area-inset-bottom))" }} className="fixed bottom-0 left-0 right-0 z-40 shadow-[0_-2px_12px_rgba(0,0,0,0.06)]">
-      <div className="flex gap-0.5 overflow-x-auto max-w-2xl mx-auto px-1 pt-2" style={{ scrollbarWidth: "none" }}>
+    <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, borderRadius: "28px 28px 0 0", paddingBottom: "max(10px, env(safe-area-inset-bottom))" }} className="fixed bottom-0 left-0 right-0 z-40 shadow-[0_-4px_20px_rgba(75,63,199,0.35)]">
+      <div className="flex gap-1 overflow-x-auto max-w-2xl mx-auto px-2 pt-3.5" style={{ scrollbarWidth: "none" }}>
         {items.map((it) => {
           const active = tab === it.key;
           const Icon = it.icon;
-          const color = TAB_COLOR[it.key];
           return (
-            <button key={it.key} onClick={() => setTab(it.key)} className="flex flex-col items-center gap-1 px-3 py-1.5 rounded-2xl shrink-0 relative min-w-[62px]">
-              <Icon size={19} color={active ? color : C.gray} strokeWidth={active ? 2.4 : 2} />
-              <span style={{ color: active ? color : C.gray }} className="text-[10px] font-bold whitespace-nowrap leading-none">{it.label}</span>
+            <button key={it.key} onClick={() => setTab(it.key)} className="flex flex-col items-center gap-1.5 px-3.5 py-1 shrink-0 relative min-w-[68px]" style={{ opacity: active ? 1 : 0.62 }}>
+              <Icon size={20} color="#fff" strokeWidth={active ? 2.5 : 2} />
+              <span className="text-[10px] whitespace-nowrap leading-none text-white" style={{ fontWeight: active ? 800 : 600 }}>{it.label}</span>
               {!!it.badge && (
-                <span style={{ background: C.coral, color: "#fff" }} className="absolute top-0 right-1.5 text-[9px] leading-none rounded-full w-3.5 h-3.5 flex items-center justify-center font-bold">
+                <span style={{ background: C.coral, color: "#fff", border: `1.5px solid ${C.purpleDeep}` }} className="absolute top-0 right-2 text-[9px] leading-none rounded-full w-3.5 h-3.5 flex items-center justify-center font-bold">
                   {it.badge}
                 </span>
               )}
@@ -627,7 +681,7 @@ function ProfilePickerModal({ profiles, setProfiles, activeProfileId, setActiveP
 }
 
 /* ---------------------------------------------------------------- */
-function Overview({ transactions, alerts, onDismissAlert, setTab }) {
+function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategories }) {
   const [period, setPeriod] = useState("month");
   const [ref, setRef] = useState(new Date());
   const [trendMonths, setTrendMonths] = useState(6);
@@ -642,14 +696,25 @@ function Overview({ transactions, alerts, onDismissAlert, setTab }) {
       months.push(ymOf(new Date(now.getFullYear(), now.getMonth() - i, 1)));
     }
     return months.map((ym) => {
-      const total = transactions
+      const row = { ym };
+      expenseCategories.forEach((c) => { row[c.key] = 0; });
+      let total = 0;
+      transactions
         .filter((t) => t.type === "expense" && t.payment !== "credit" && t.date.slice(0, 7) === ym)
-        .reduce((a, t) => a + Number(t.amount), 0);
+        .forEach((t) => {
+          const mainCat = resolveMainCategory(expenseCategories, t.category);
+          row[mainCat] = (row[mainCat] || 0) + Number(t.amount);
+          total += Number(t.amount);
+        });
       const [y, m] = ym.split("-").map(Number);
-      return { ym, label: MONTH_ABBR_TH[m - 1], value: total, isCurrent: ym === nowYm };
+      row.label = MONTH_ABBR_TH[m - 1];
+      row.value = total;
+      row.isCurrent = ym === nowYm;
+      return row;
     });
-  }, [transactions, trendMonths]);
+  }, [transactions, trendMonths, expenseCategories]);
   const trendAvg = monthlyTrend.length ? monthlyTrend.reduce((a, m) => a + m.value, 0) / monthlyTrend.length : 0;
+  const trendCats = useMemo(() => expenseCategories.filter((c) => monthlyTrend.some((r) => r[c.key] > 0)), [monthlyTrend, expenseCategories]);
 
   const range = useMemo(() => {
     const d = new Date(ref);
@@ -686,9 +751,9 @@ function Overview({ transactions, alerts, onDismissAlert, setTab }) {
 
   const byCat = useMemo(() => {
     const m = {};
-    filtered.filter((t) => t.type === "expense").forEach((t) => { m[t.category] = (m[t.category] || 0) + Number(t.amount); });
-    return Object.entries(m).map(([k, v]) => ({ name: catMeta(EXPENSE_CATEGORIES, k).label, value: v, avgPerDay: v / daysInPeriod, color: CAT_COLOR[k] })).sort((a, b) => b.value - a.value);
-  }, [filtered, daysInPeriod]);
+    filtered.filter((t) => t.type === "expense").forEach((t) => { const k = resolveMainCategory(expenseCategories, t.category); m[k] = (m[k] || 0) + Number(t.amount); });
+    return Object.entries(m).map(([k, v]) => ({ name: catMeta(expenseCategories, k).label, value: v, avgPerDay: v / daysInPeriod, color: categoryColor(expenseCategories, k) })).sort((a, b) => b.value - a.value);
+  }, [filtered, daysInPeriod, expenseCategories]);
   const byCatTotal = byCat.reduce((a, c) => a + c.value, 0);
 
   function shift(delta) {
@@ -752,20 +817,31 @@ function Overview({ transactions, alerts, onDismissAlert, setTab }) {
             ))}
           </div>
         </div>
-        <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>เฉลี่ย {fmtTHB(trendAvg)}/เดือน · นับเฉพาะเงินสด/โอน (ไม่รวมบัตรเครดิต)</p>
-        <div style={{ width: "100%", height: 180 }}>
+        <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>เฉลี่ย {fmtTHB(trendAvg)}/เดือน · แยกสีตามหมวดหมู่ · นับเฉพาะเงินสด/โอน (ไม่รวมบัตรเครดิต)</p>
+        <div style={{ width: "100%", height: 200 }}>
           <ResponsiveContainer>
             <BarChart data={monthlyTrend} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.graySoft} vertical={false} />
               <XAxis dataKey="label" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 10 }} width={44} tickFormatter={(v) => v >= 1000 ? `${Math.round(v / 1000)}k` : v} />
-              <Tooltip formatter={(v) => fmtTHB(v)} />
-              <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-                {monthlyTrend.map((e, i) => <Cell key={i} fill={e.isCurrent ? C.purple : C.purpleSoft} />)}
-              </Bar>
+              <Tooltip formatter={(v, name) => [fmtTHB(v), catMeta(expenseCategories, name).label]} labelFormatter={(l) => l} />
+              {expenseCategories.map((c, ci) => (
+                <Bar key={c.key} dataKey={c.key} stackId="exp" fill={c.color} radius={ci === expenseCategories.length - 1 ? [6, 6, 0, 0] : [0, 0, 0, 0]}>
+                  {monthlyTrend.map((row, i) => <Cell key={i} fillOpacity={row.isCurrent ? 1 : 0.5} />)}
+                </Bar>
+              ))}
             </BarChart>
           </ResponsiveContainer>
         </div>
+        {trendCats.length > 0 && (
+          <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-3">
+            {trendCats.map((c) => (
+              <span key={c.key} className="flex items-center gap-1.5 text-[11px] font-semibold" style={{ color: C.inkSoft }}>
+                <span style={{ background: c.color, width: 8, height: 8, borderRadius: 8 }} />{c.label}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
@@ -839,44 +915,58 @@ function AlertBanner({ alerts, onDismiss }) {
 function EmptyNote({ text }) { return <p className="text-sm py-6 text-center" style={{ color: C.inkSoft }}>{text}</p>; }
 
 /* ---------------------------------------------------------------- */
-function TransactionsTab({ transactions, setTransactions, profiles, activeProfileId, budgets = {}, setTab }) {
+function TransactionsTab({ transactions, setTransactions, profiles, activeProfileId, budgets = {}, setTab, expenseCategories, creditCards }) {
   const [editingId, setEditingId] = useState(null);
   const [type, setType] = useState("expense");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState(null);
   const [subcategory, setSubcategory] = useState(null);
-  const [payment, setPayment] = useState("cash");
-  const [card, setCard] = useState(CREDIT_CARDS[0]);
+  const [payment, setPayment] = useState(null);
+  const [card, setCard] = useState(null);
   const [date, setDate] = useState(todayStr());
   const [note, setNote] = useState("");
   const [filter, setFilter] = useState("all");
   const [profileFilter, setProfileFilter] = useState("all");
   const [toast, setToast] = useState(null);
   const [catError, setCatError] = useState(false);
+  const [payError, setPayError] = useState(false);
+  const [cardError, setCardError] = useState(false);
   const [budgetAlert, setBudgetAlert] = useState(null);
+  const [showSubcatModal, setShowSubcatModal] = useState(false);
+  const [showCardModal, setShowCardModal] = useState(false);
 
-  const categories = type === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
-  const activeSubcats = type === "expense" && category ? catMeta(EXPENSE_CATEGORIES, category)?.subcategories : null;
+  const categories = type === "expense" ? expenseCategories : INCOME_CATEGORIES;
+  const activeSubcats = type === "expense" && category ? catMeta(expenseCategories, category)?.subcategories : null;
 
   function switchType(t) { setType(t); setCategory(null); setSubcategory(null); setCatError(false); }
-  function pickCategory(key) { setCategory(key); setSubcategory(null); setCatError(false); }
+  function pickCategory(key) {
+    setCategory(key); setSubcategory(null); setCatError(false);
+    const meta = catMeta(expenseCategories, key);
+    if (meta?.subcategories?.length) setShowSubcatModal(true);
+  }
+  function pickPayment(k) {
+    setPayment(k); setPayError(false);
+    if (k === "credit") { setCard(null); setShowCardModal(true); }
+  }
   function showToast(msg) {
     setToast(msg);
     setTimeout(() => setToast(null), 2200);
   }
   function resetForm() {
     setEditingId(null); setType("expense"); setAmount(""); setCategory(null); setSubcategory(null); setCatError(false);
-    setPayment("cash"); setCard(CREDIT_CARDS[0]); setDate(todayStr()); setNote("");
+    setPayment(null); setPayError(false); setCard(null); setCardError(false); setDate(todayStr()); setNote("");
   }
   function startEdit(t) {
     setEditingId(t.id); setType(t.type); setAmount(String(t.amount)); setCategory(t.category); setSubcategory(t.subcategory || null);
-    setPayment(t.payment); setCard(t.card || CREDIT_CARDS[0]); setDate(t.date); setNote(t.note || "");
+    setPayment(t.payment); setCard(t.card || null); setDate(t.date); setNote(t.note || "");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
   function save() {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) return;
     if (!category) { setCatError(true); return; }
+    if (!payment) { setPayError(true); return; }
+    if (payment === "credit" && !card) { setCardError(true); return; }
     const wasEditing = !!editingId;
     const ym = date.slice(0, 7);
     const limit = type === "expense" ? budgets[category] : null;
@@ -921,7 +1011,7 @@ function TransactionsTab({ transactions, setTransactions, profiles, activeProfil
             </div>
             <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg mb-1.5">ใช้จ่ายเกินงบแล้ว!</p>
             <p className="text-sm mb-4" style={{ color: C.inkSoft }}>
-              หมวด <b style={{ color: C.ink }}>{catMeta(EXPENSE_CATEGORIES, budgetAlert.category).label}</b> เดือนนี้ใช้ไป <b style={{ color: C.coral, fontFamily: "'Manrope', sans-serif" }}>{fmtTHB(budgetAlert.spent)}</b> จากงบที่ตั้งไว้ <b style={{ color: C.ink }}>{fmtTHB(budgetAlert.limit)}</b>
+              หมวด <b style={{ color: C.ink }}>{catMeta(expenseCategories, budgetAlert.category).label}</b> เดือนนี้ใช้ไป <b style={{ color: C.coral, fontFamily: "'Manrope', sans-serif" }}>{fmtTHB(budgetAlert.spent)}</b> จากงบที่ตั้งไว้ <b style={{ color: C.ink }}>{fmtTHB(budgetAlert.limit)}</b>
             </p>
             <div className="flex gap-2">
               <button onClick={() => setBudgetAlert(null)} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2.5 rounded-full text-sm font-bold">รับทราบ</button>
@@ -929,6 +1019,63 @@ function TransactionsTab({ transactions, setTransactions, profiles, activeProfil
                 <button onClick={() => { setBudgetAlert(null); setTab("budgets"); }} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex-1 py-2.5 rounded-full text-sm font-bold">ดูงบประมาณ</button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+      {showSubcatModal && activeSubcats && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowSubcatModal(false)}>
+          <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">เลือกหมวดหมู่ย่อย</p>
+              <button onClick={() => setShowSubcatModal(false)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
+            </div>
+            <div className="grid grid-cols-4 gap-y-4 gap-x-1">
+              <button onClick={() => { setSubcategory(null); setShowSubcatModal(false); }} className="flex flex-col items-center gap-1.5">
+                <div style={{ background: !subcategory ? C.purple : "#fff", border: `1.5px solid ${C.purple}` }} className="w-14 h-14 rounded-full flex items-center justify-center shadow-sm">
+                  <MoreHorizontal size={19} color={!subcategory ? "#fff" : C.purple} />
+                </div>
+                <span style={{ color: !subcategory ? C.purple : C.inkSoft }} className="text-[11px] font-bold">ทั่วไป</span>
+              </button>
+              {activeSubcats.map((s) => {
+                const SIcon = resolveIcon(s.icon); const activeSub = subcategory === s.key;
+                return (
+                  <button key={s.key} onClick={() => { setSubcategory(s.key); setShowSubcatModal(false); }} className="flex flex-col items-center gap-1.5">
+                    <div style={{ background: activeSub ? C.purple : "#fff", border: `1.5px solid ${C.purple}` }} className="w-14 h-14 rounded-full flex items-center justify-center shadow-sm">
+                      <SIcon size={19} color={activeSub ? "#fff" : C.purple} />
+                    </div>
+                    <span style={{ color: activeSub ? C.purple : C.inkSoft }} className="text-[11px] font-bold text-center leading-tight">{s.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+      {showCardModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowCardModal(false)}>
+          <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">เลือกบัตรเครดิต</p>
+              <button onClick={() => setShowCardModal(false)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
+            </div>
+            {creditCards.length === 0 ? (
+              <EmptyNote text="ยังไม่มีบัตรเครดิต — ไปเพิ่มได้ที่หน้าตั้งค่า" />
+            ) : (
+              <div className="grid grid-cols-3 gap-y-4 gap-x-1">
+                {creditCards.map((cd) => {
+                  const active = card === cd.name;
+                  const CardIcon = resolveIcon(cd.icon);
+                  return (
+                    <button key={cd.name} onClick={() => { setCard(cd.name); setCardError(false); setShowCardModal(false); }} className="flex flex-col items-center gap-1.5">
+                      <div style={{ background: active ? cd.color : "#fff", border: `1.5px solid ${cd.color}` }} className="w-14 h-14 rounded-full flex items-center justify-center shadow-sm">
+                        <CardIcon size={19} color={active ? "#fff" : cd.color} />
+                      </div>
+                      <span style={{ color: active ? cd.color : C.inkSoft }} className="text-[11px] font-bold text-center leading-tight">{cd.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -949,44 +1096,61 @@ function TransactionsTab({ transactions, setTransactions, profiles, activeProfil
         </div>
 
         <Field label="หมวดหมู่">
-          <div className="flex flex-wrap gap-2">
+          <div className="grid grid-cols-4 gap-y-3 gap-x-1">
             {categories.map((c) => {
-              const Icon = c.icon; const active = category === c.key; const color = CAT_COLOR[c.key];
+              const Icon = resolveIcon(c.icon); const active = category === c.key;
               return (
-                <button key={c.key} onClick={() => pickCategory(c.key)} style={{ background: active ? color : C.graySoft, color: active ? "#fff" : C.inkSoft }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-bold">
-                  <Icon size={13} />{c.label}
+                <button key={c.key} onClick={() => pickCategory(c.key)} className="flex flex-col items-center gap-1.5">
+                  <div style={{ background: active ? C.purple : "#fff", border: `1.5px solid ${C.purple}` }} className="w-14 h-14 rounded-full flex items-center justify-center shadow-sm">
+                    <Icon size={20} color={active ? "#fff" : C.purple} strokeWidth={2} />
+                  </div>
+                  <span style={{ color: active ? C.purple : C.inkSoft }} className="text-[11px] font-bold text-center leading-tight">{c.label}</span>
                 </button>
               );
             })}
           </div>
-          {catError && <p className="text-xs font-semibold mt-1.5" style={{ color: C.coral }}>กรุณาเลือกหมวดหมู่ก่อนบันทึก</p>}
-          {activeSubcats && activeSubcats.length > 0 && (
-            <div className="flex flex-wrap gap-2 mt-2.5">
-              <button onClick={() => setSubcategory(null)} style={{ background: !subcategory ? C.ink : C.graySoft, color: !subcategory ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-xs font-bold">ทั่วไป</button>
-              {activeSubcats.map((s) => {
-                const SIcon = s.icon; const activeSub = subcategory === s.key; const scolor = CAT_COLOR[s.key];
-                return (
-                  <button key={s.key} onClick={() => setSubcategory(s.key)} style={{ background: activeSub ? scolor : C.graySoft, color: activeSub ? "#fff" : C.inkSoft }} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold">
-                    <SIcon size={11} />{s.label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          {catError && <p className="text-xs font-semibold mt-2" style={{ color: C.coral }}>กรุณาเลือกหมวดหมู่ก่อนบันทึก</p>}
+          {activeSubcats && activeSubcats.length > 0 && (() => {
+            const subMeta = subcategory ? subcategoryMeta(expenseCategories, category, subcategory) : null;
+            const SubIcon = subMeta ? resolveIcon(subMeta.icon) : null;
+            return (
+              <button onClick={() => setShowSubcatModal(true)} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs font-bold mt-3 w-full">
+                {SubIcon && <SubIcon size={14} />}
+                <span>{subMeta ? `หมวดย่อย: ${subMeta.label}` : "เลือกหมวดหมู่ย่อย (ไม่บังคับ)"}</span>
+                <Pencil size={12} className="ml-auto" />
+              </button>
+            );
+          })()}
         </Field>
 
-        <div className="h-3" />
+        <div className="h-4" />
         <Field label="ช่องทางการชำระเงิน">
-          <div className="flex flex-wrap gap-2 items-center">
-            {[["cash", "เงินสด", Banknote, C.yellowDeep], ["transfer", "โอนเงิน", ArrowLeftRight, C.blue], ["credit", "บัตรเครดิต", CreditCard, C.purple]].map(([k, label, Icon, color]) => (
-              <button key={k} onClick={() => setPayment(k)} style={{ background: payment === k ? color : C.graySoft, color: payment === k ? "#fff" : C.inkSoft }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-bold"><Icon size={13} />{label}</button>
-            ))}
-            {payment === "credit" && (
-              <select value={card} onChange={(e) => setCard(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
-                {CREDIT_CARDS.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-            )}
+          <div className="flex flex-wrap gap-2.5 justify-center">
+            {[["cash", "เงินสด", Banknote], ["transfer", "โอนเงิน", ArrowLeftRight], ["credit", "บัตรเครดิต", CreditCard]].map(([k, label, Icon]) => {
+              const active = payment === k;
+              return (
+                <button key={k} onClick={() => pickPayment(k)}
+                  style={{ background: active ? C.purple : "#fff", border: `1.5px solid ${C.purple}` }}
+                  className="flex items-center gap-2 px-3.5 py-2 rounded-2xl shadow-sm">
+                  <div style={{ background: active ? "rgba(255,255,255,0.25)" : C.purpleSoft }} className="w-8 h-8 rounded-full flex items-center justify-center shrink-0">
+                    <Icon size={15} color={active ? "#fff" : C.purple} />
+                  </div>
+                  <span style={{ color: active ? "#fff" : C.purple }} className="text-xs font-bold text-left leading-tight">{label}</span>
+                </button>
+              );
+            })}
           </div>
+          {payError && <p className="text-xs font-semibold mt-2 text-center" style={{ color: C.coral }}>กรุณาเลือกช่องทางการชำระเงิน</p>}
+          {payment === "credit" && (
+            <div className="flex justify-center mt-3">
+              <button onClick={() => setShowCardModal(true)} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs font-bold">
+                <CreditCard size={14} />
+                <span>{card ? `บัตร: ${card}` : "เลือกบัตรเครดิต"}</span>
+                <Pencil size={12} />
+              </button>
+            </div>
+          )}
+          {cardError && <p className="text-xs font-semibold mt-2 text-center" style={{ color: C.coral }}>กรุณาเลือกบัตรเครดิต</p>}
         </Field>
 
         <div className="h-3" />
@@ -1024,9 +1188,10 @@ function TransactionsTab({ transactions, setTransactions, profiles, activeProfil
         {visible.length === 0 ? <EmptyNote text="ยังไม่มีรายการ — เริ่มบันทึกรายการแรกของคุณด้านบน" /> : (
           <div className="flex flex-col gap-2">
             {visible.map((t) => {
-              const meta = catMeta(t.type === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES, t.category);
-              const subMeta = t.subcategory ? subcategoryMeta(t.category, t.subcategory) : null;
-              const Icon = subMeta ? subMeta.icon : meta.icon; const color = CAT_COLOR[subMeta ? subMeta.key : t.category];
+              const meta = catMeta(t.type === "expense" ? expenseCategories : INCOME_CATEGORIES, t.category);
+              const subMeta = t.subcategory && t.type === "expense" ? subcategoryMeta(expenseCategories, t.category, t.subcategory) : null;
+              const Icon = resolveIcon(subMeta ? subMeta.icon : meta.icon);
+              const color = t.type === "expense" ? categoryColor(expenseCategories, subMeta ? subMeta.key : t.category) : categoryColor(INCOME_CATEGORIES, t.category);
               const loggedBy = t.profileId ? profileById(profiles, t.profileId) : null;
               return (
                 <div key={t.id} style={{ background: C.card, border: editingId === t.id ? `2px solid ${C.purple}` : "none" }} className="flex items-center gap-3 px-3.5 py-3 rounded-2xl shadow-sm">
@@ -1105,9 +1270,9 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
       </div>
 
       <div className="flex rounded-full overflow-hidden p-1 w-fit" style={{ background: C.graySoft }}>
-        <button onClick={() => setSubTab("log")} style={{ background: subTab === "log" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full shadow-sm">รายการออม-ลงทุน</button>
-        <button onClick={() => setSubTab("plan")} style={{ background: subTab === "plan" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><PieChartIcon size={13} />แผนพอร์ตการลงทุน</button>
-        <button onClick={() => setSubTab("holdings")} style={{ background: subTab === "holdings" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><Rocket size={13} />พอร์ตปัจจุบัน</button>
+        <button onClick={() => setSubTab("log")} style={{ background: subTab === "log" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full shadow-sm">Transactions</button>
+        <button onClick={() => setSubTab("plan")} style={{ background: subTab === "plan" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><PieChartIcon size={13} />Investment Plan</button>
+        <button onClick={() => setSubTab("holdings")} style={{ background: subTab === "holdings" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><Rocket size={13} />Portfolio</button>
       </div>
 
       {subTab === "log" && (
@@ -1174,9 +1339,9 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
 }
 
 /* ---------------------------------------------------------------- */
-function DebtsTab({ debts, setDebts }) {
+function DebtsTab({ debts, setDebts, creditCards, setTransactions }) {
   const [debtType, setDebtType] = useState("other");
-  const [selectedCard, setSelectedCard] = useState(CREDIT_CARDS[0]);
+  const [selectedCard, setSelectedCard] = useState(creditCards[0]?.name || "");
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
   const [dueDate, setDueDate] = useState(todayStr());
@@ -1192,10 +1357,30 @@ function DebtsTab({ debts, setDebts }) {
     setName(""); setAmount("");
   }
   function remove(id) { setDebts((prev) => prev.filter((d) => d.id !== id)); }
+  function updateAmount(id, val) {
+    const amt = parseFloat(val);
+    if (isNaN(amt) || amt < 0) return;
+    setDebts((prev) => prev.map((d) => (d.id === id ? { ...d, amount: amt, amountOverridden: d.auto ? true : d.amountOverridden } : d)));
+  }
+  function logPaymentTransaction(d) {
+    const isCredit = !!d.card;
+    setTransactions((prev) => [{
+      id: uid(), type: "expense",
+      category: isCredit ? "creditcard" : "others",
+      subcategory: null,
+      amount: d.amount,
+      date: todayStr(),
+      payment: "transfer",
+      card: null,
+      note: d.name,
+      profileId: null,
+    }, ...prev]);
+  }
   function togglePaid(id) {
     setDebts((prev) => prev.map((d) => {
       if (d.id !== id) return d;
       const nowPaid = !d.paid;
+      if (nowPaid) logPaymentTransaction(d);
       if (nowPaid && d.recurring) {
         const next = parseLocalDate(d.dueDate); next.setMonth(next.getMonth() + 1);
         return { ...d, paid: false, dueDate: toLocalDateStr(next) };
@@ -1218,7 +1403,7 @@ function DebtsTab({ debts, setDebts }) {
           <Field label="ชื่อรายการ">
             {debtType === "credit" ? (
               <select value={selectedCard} onChange={(e) => setSelectedCard(e.target.value)} style={inputStyle}>
-                {CREDIT_CARDS.map((c) => <option key={c} value={c}>{c}</option>)}
+                {creditCards.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
               </select>
             ) : (
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น ผ่อนมือถือ" style={inputStyle} />
@@ -1231,7 +1416,7 @@ function DebtsTab({ debts, setDebts }) {
           </Field>
         </div>
         <button onClick={add} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> เพิ่มรายการ</button>
-        {debtType === "credit" && <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>วันตัดรอบ/ครบกำหนดอัตโนมัติของแต่ละบัตรตั้งได้ที่หน้า "แผนรายเดือน" — รายการนี้ไว้สำหรับกำหนดยอด/วันครบกำหนดแบบระบุเอง</p>}
+        {debtType === "credit" && <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>วันตัดรอบ/ครบกำหนดอัตโนมัติของแต่ละบัตรตั้งได้ที่หน้า "Fix Cost" — รายการนี้ไว้สำหรับกำหนดยอด/วันครบกำหนดแบบระบุเอง</p>}
       </div>
 
       <div>
@@ -1246,29 +1431,32 @@ function DebtsTab({ debts, setDebts }) {
               else if (diff <= 3) { chipBg = C.yellowSoft; chipColor = C.yellowDeep; statusText = diff === 0 ? "วันนี้" : `อีก ${diff} วัน`; }
               return (
                 <div key={d.id} style={{ background: C.card }} className="flex items-center gap-3 px-3.5 py-3 rounded-2xl shadow-sm">
-                  <button onClick={() => togglePaid(d.id)} style={{ color: d.paid ? C.teal : C.graySoft }}><CheckCircle2 size={22} /></button>
+                  <button onClick={() => togglePaid(d.id)} style={{ color: d.paid ? C.teal : C.graySoft }} className="shrink-0"><CheckCircle2 size={22} /></button>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-bold truncate flex items-center gap-1.5" style={{ textDecoration: d.paid ? "line-through" : "none" }}>
-                      {d.card && <CreditCard size={12} color={C.purple} className="shrink-0" />}
+                      {d.card && (() => { const cm = cardMeta(creditCards, d.card); const CIcon = resolveIcon(cm.icon); return <CIcon size={12} color={cm.color} className="shrink-0" />; })()}
                       {d.name}{d.recurring ? " (รายเดือน)" : ""}{d.auto ? " · อัตโนมัติ" : ""}
                     </p>
                     <p className="text-xs" style={{ color: C.inkSoft }}>ครบกำหนด {thDate(d.dueDate)}</p>
                   </div>
-                  <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-bold whitespace-nowrap px-2.5 py-1 rounded-full">{statusText}</span>
-                  <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-sm font-bold whitespace-nowrap">{fmtTHB(d.amount)}</p>
-                  <button onClick={() => remove(d.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={14} /></button>
+                  <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-bold whitespace-nowrap px-2.5 py-1 rounded-full shrink-0">{statusText}</span>
+                  <input type="number" min="0" defaultValue={d.amount} key={d.id + "-amt-" + d.amount}
+                    onBlur={(e) => updateAmount(d.id, e.target.value)}
+                    style={{ ...inputStyle, width: 92, padding: "6px 8px", fontFamily: "'Manrope', sans-serif", fontWeight: 700, textAlign: "right" }} />
+                  <button onClick={() => remove(d.id)} style={{ color: C.gray }} className="p-1 shrink-0"><Trash2 size={14} /></button>
                 </div>
               );
             })}
           </div>
         )}
+        <p className="text-[11px] mt-2.5" style={{ color: C.inkSoft }}>แก้ไขยอดได้ตรงๆ ในช่องตัวเลข (ยอดบัตรเครดิตที่ซิงก์อัตโนมัติจะไม่ถูกคำนวณทับอีกหลังแก้ไข) กดติ๊กถูกเมื่อชำระแล้ว ระบบจะบันทึกเป็นรายการรายจ่ายในหน้า "รายรับ-จ่าย" ให้อัตโนมัติ (บัตรเครดิต → หมวด Credit Card, หนี้ทั่วไป → หมวดอื่นๆ พร้อมชื่อรายการในโน้ต)</p>
       </div>
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- */
-function BudgetsTab({ budgets, setBudgets, monthSpend }) {
+function BudgetsTab({ budgets, setBudgets, monthSpend, expenseCategories }) {
   function setLimit(cat, val) { setBudgets((prev) => ({ ...prev, [cat]: val === "" ? undefined : parseFloat(val) })); }
 
   return (
@@ -1277,12 +1465,12 @@ function BudgetsTab({ budgets, setBudgets, monthSpend }) {
         ตั้งวงเงินงบประมาณรายเดือนต่อหมวดหมู่ ระบบจะแจ้งเตือนเมื่อใช้จ่ายใกล้หรือครบตามวงเงินที่ตั้งไว้
       </div>
       <div className="flex flex-col gap-2">
-        {EXPENSE_CATEGORIES.map((c) => {
-          const Icon = c.icon;
+        {expenseCategories.map((c) => {
+          const Icon = resolveIcon(c.icon);
           const limit = budgets[c.key];
           const spent = monthSpend[c.key] || 0;
           const pct = limit ? Math.min(100, Math.round((spent / limit) * 100)) : 0;
-          const color = CAT_COLOR[c.key];
+          const color = c.color;
           const barColor = pct >= 100 ? C.coral : pct >= 80 ? C.yellowDeep : color;
           return (
             <div key={c.key} style={{ background: C.card }} className="rounded-2xl px-4 py-3.5 shadow-sm">
@@ -1317,6 +1505,7 @@ function MonthlyPlanTab({
   savingsPlan, setSavingsPlan,
   cardSettings, setCardSettings,
   debts, transactions, setSavings,
+  creditCards,
 }) {
   const [ym, setYm] = useState(ymOf(new Date()));
   const [showSettings, setShowSettings] = useState(false);
@@ -1460,21 +1649,23 @@ function MonthlyPlanTab({
         </button>
         {showSettings && (
           <div className="flex flex-col gap-2.5 mt-3">
-            {CREDIT_CARDS.map((card) => {
-              const cs = cardSettings[card] || { cutoffDay: 25, dueDay: 5 };
+            {creditCards.map((card) => {
+              const cs = cardSettings[card.name] || { cutoffDay: 25, dueDay: 5 };
+              const CardIcon = resolveIcon(card.icon);
               return (
-                <div key={card} style={{ background: C.bg }} className="rounded-2xl px-3.5 py-2.5 flex items-center gap-3 flex-wrap">
-                  <p className="text-sm font-bold w-20 shrink-0">{card}</p>
+                <div key={card.name} style={{ background: C.bg }} className="rounded-2xl px-3.5 py-2.5 flex items-center gap-3 flex-wrap">
+                  <div style={{ background: card.color }} className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"><CardIcon size={13} color="#fff" /></div>
+                  <p className="text-sm font-bold w-20 shrink-0">{card.name}</p>
                   <div className="flex items-center gap-1.5 text-xs" style={{ color: C.inkSoft }}>
                     วันตัดรอบ
                     <input type="number" min="1" max="31" value={cs.cutoffDay}
-                      onChange={(e) => setCardSettings((p) => ({ ...p, [card]: { ...cs, cutoffDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) } }))}
+                      onChange={(e) => setCardSettings((p) => ({ ...p, [card.name]: { ...cs, cutoffDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) } }))}
                       style={{ ...inputStyle, width: 55 }} />
                   </div>
                   <div className="flex items-center gap-1.5 text-xs" style={{ color: C.inkSoft }}>
                     วันครบกำหนดชำระ
                     <input type="number" min="1" max="31" value={cs.dueDay}
-                      onChange={(e) => setCardSettings((p) => ({ ...p, [card]: { ...cs, dueDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) } }))}
+                      onChange={(e) => setCardSettings((p) => ({ ...p, [card.name]: { ...cs, dueDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) } }))}
                       style={{ ...inputStyle, width: 55 }} />
                   </div>
                 </div>
@@ -1744,9 +1935,9 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
       </div>
 
       <div className="flex rounded-full overflow-hidden p-1 w-fit" style={{ background: C.graySoft }}>
-        <button onClick={() => setSubView("items")} style={{ background: subView === "items" ? C.card : "transparent" }} className="px-3.5 py-1.5 text-xs font-bold rounded-full shadow-sm">รายการ</button>
-        <button onClick={() => setSubView("monthly")} style={{ background: subView === "monthly" ? C.card : "transparent" }} className="px-3.5 py-1.5 text-xs font-bold rounded-full flex items-center gap-1"><Calendar size={12} />แผนรายเดือน</button>
-        <button onClick={() => setSubView("summary")} style={{ background: subView === "summary" ? C.card : "transparent" }} className="px-3.5 py-1.5 text-xs font-bold rounded-full flex items-center gap-1"><PieChartIcon size={12} />สรุป</button>
+        <button onClick={() => setSubView("items")} style={{ background: subView === "items" ? C.card : "transparent" }} className="px-3.5 py-1.5 text-xs font-bold rounded-full shadow-sm">Items</button>
+        <button onClick={() => setSubView("monthly")} style={{ background: subView === "monthly" ? C.card : "transparent" }} className="px-3.5 py-1.5 text-xs font-bold rounded-full flex items-center gap-1"><Calendar size={12} />Monthly Plan</button>
+        <button onClick={() => setSubView("summary")} style={{ background: subView === "summary" ? C.card : "transparent" }} className="px-3.5 py-1.5 text-xs font-bold rounded-full flex items-center gap-1"><PieChartIcon size={12} />Summary</button>
       </div>
 
       {subView === "items" && (
@@ -2457,6 +2648,181 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
         )}
         <p className="text-[11px] mt-3" style={{ color: C.inkSoft }}>ติ๊กถูก "จ่ายแล้ว" เพื่อเช็คลิสต์เดือนที่ชำระ และแก้ "ยอดผ่อนจริง" ได้ตรงๆ ในตาราง (เช่นเดือนไหนโปะเพิ่ม) ตารางทั้งหมดจะคำนวณเงินต้น/ดอกเบี้ยใหม่ให้ทันที ค่านี้ผูกกับรายการ Fix Cost ในหน้า "แผนรายเดือน" ด้วย</p>
       </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/*  Settings — user-editable categories, subcategories, credit cards */
+/*  (per-account, since storage is already isolated per user)        */
+/* ---------------------------------------------------------------- */
+function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, setCreditCards, setCardSettings, onClose }) {
+  const [section, setSection] = useState("categories");
+  const [expandedCat, setExpandedCat] = useState(null);
+  const [form, setForm] = useState(null);
+
+  function openNewCategoryForm() {
+    setForm({ mode: "newCat", name: "", icon: "Tag", color: CATEGORY_COLOR_PALETTE[expenseCategories.length % CATEGORY_COLOR_PALETTE.length] });
+  }
+  function openEditCategoryForm(cat) {
+    setForm({ mode: "editCat", catKey: cat.key, name: cat.label, icon: cat.icon, color: cat.color });
+  }
+  function openNewSubForm(catKey) {
+    const cat = expenseCategories.find((c) => c.key === catKey);
+    setForm({ mode: "newSub", catKey, name: "", icon: "Tag", color: CATEGORY_COLOR_PALETTE[(cat.subcategories?.length || 0) % CATEGORY_COLOR_PALETTE.length] });
+  }
+  function openEditSubForm(catKey, sub) {
+    setForm({ mode: "editSub", catKey, subKey: sub.key, name: sub.label, icon: sub.icon, color: sub.color });
+  }
+  function openNewCardForm() {
+    setForm({ mode: "newCard", name: "", icon: "CreditCard", color: CATEGORY_COLOR_PALETTE[creditCards.length % CATEGORY_COLOR_PALETTE.length] });
+  }
+  function openEditCardForm(cd) {
+    setForm({ mode: "editCard", oldName: cd.name, name: cd.name, icon: cd.icon, color: cd.color });
+  }
+  function saveForm() {
+    if (!form.name.trim()) return;
+    if (form.mode === "newCat") {
+      const key = "cat_" + uid();
+      setExpenseCategories((prev) => [...prev, { key, label: form.name.trim(), icon: form.icon, color: form.color, subcategories: [] }]);
+    } else if (form.mode === "editCat") {
+      setExpenseCategories((prev) => prev.map((c) => (c.key === form.catKey ? { ...c, label: form.name.trim(), icon: form.icon, color: form.color } : c)));
+    } else if (form.mode === "newSub") {
+      const key = "sub_" + uid();
+      setExpenseCategories((prev) => prev.map((c) => (c.key === form.catKey ? { ...c, subcategories: [...(c.subcategories || []), { key, label: form.name.trim(), icon: form.icon, color: form.color }] } : c)));
+    } else if (form.mode === "editSub") {
+      setExpenseCategories((prev) => prev.map((c) => (c.key === form.catKey ? { ...c, subcategories: (c.subcategories || []).map((s) => (s.key === form.subKey ? { ...s, label: form.name.trim(), icon: form.icon, color: form.color } : s)) } : c)));
+    } else if (form.mode === "newCard") {
+      const nm = form.name.trim();
+      if (!creditCards.some((c) => c.name === nm)) {
+        setCreditCards((prev) => [...prev, { name: nm, icon: form.icon, color: form.color }]);
+        setCardSettings((prev) => ({ ...prev, [nm]: { cutoffDay: 25, dueDay: 5 } }));
+      }
+    } else if (form.mode === "editCard") {
+      const nm = form.name.trim();
+      if (nm === form.oldName || !creditCards.some((c) => c.name === nm)) {
+        setCreditCards((prev) => prev.map((c) => (c.name === form.oldName ? { name: nm, icon: form.icon, color: form.color } : c)));
+        if (nm !== form.oldName) {
+          setCardSettings((prev) => { const next = { ...prev }; if (next[form.oldName]) { next[nm] = next[form.oldName]; delete next[form.oldName]; } return next; });
+        }
+      }
+    }
+    setForm(null);
+  }
+  function deleteCategory(key) {
+    if (expenseCategories.length <= 1) return;
+    setExpenseCategories((prev) => prev.filter((c) => c.key !== key));
+  }
+  function deleteSub(catKey, subKey) {
+    setExpenseCategories((prev) => prev.map((c) => (c.key === catKey ? { ...c, subcategories: (c.subcategories || []).filter((s) => s.key !== subKey) } : c)));
+  }
+  function deleteCard(name) {
+    if (creditCards.length <= 1) return;
+    setCreditCards((prev) => prev.filter((c) => c.name !== name));
+    setCardSettings((prev) => { const next = { ...prev }; delete next[name]; return next; });
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
+      <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 440, width: "100%", maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">ตั้งค่า</p>
+          <button onClick={onClose} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
+        </div>
+        <p className="text-xs mb-4" style={{ color: C.inkSoft }}>หมวดหมู่และบัตรเครดิตที่ตั้งไว้นี้เป็นของบัญชีคุณเท่านั้น ไม่กระทบผู้ใช้คนอื่น</p>
+
+        <div className="flex rounded-full overflow-hidden p-1 mb-4 w-fit" style={{ background: C.graySoft }}>
+          <button onClick={() => setSection("categories")} style={{ background: section === "categories" ? C.purple : "transparent", color: section === "categories" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">หมวดหมู่</button>
+          <button onClick={() => setSection("cards")} style={{ background: section === "cards" ? C.purple : "transparent", color: section === "cards" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">บัตรเครดิต</button>
+        </div>
+
+        {section === "categories" && (
+          <div className="flex flex-col gap-2">
+            {expenseCategories.map((cat) => {
+              const Icon = resolveIcon(cat.icon);
+              const expanded = expandedCat === cat.key;
+              return (
+                <div key={cat.key} style={{ background: C.bg }} className="rounded-2xl p-3">
+                  <div className="flex items-center gap-2.5">
+                    <div style={{ background: cat.color }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><Icon size={16} color="#fff" /></div>
+                    <span className="text-sm font-bold flex-1">{cat.label}</span>
+                    <button onClick={() => setExpandedCat(expanded ? null : cat.key)} style={{ color: C.inkSoft }} className="p-1">{expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</button>
+                    <button onClick={() => openEditCategoryForm(cat)} style={{ color: C.purple }} className="p-1"><Pencil size={14} /></button>
+                    <button onClick={() => deleteCategory(cat.key)} style={{ color: expenseCategories.length <= 1 ? C.graySoft : C.gray }} className="p-1" disabled={expenseCategories.length <= 1}><Trash2 size={14} /></button>
+                  </div>
+                  {expanded && (
+                    <div className="mt-2.5 pl-11 flex flex-col gap-1.5">
+                      {(cat.subcategories || []).length === 0 && <p className="text-[11px]" style={{ color: C.inkSoft }}>ยังไม่มีหมวดหมู่ย่อย</p>}
+                      {(cat.subcategories || []).map((sub) => {
+                        const SIcon = resolveIcon(sub.icon);
+                        return (
+                          <div key={sub.key} className="flex items-center gap-2 text-xs">
+                            <div style={{ background: sub.color }} className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0"><SIcon size={12} color="#fff" /></div>
+                            <span className="flex-1 font-semibold">{sub.label}</span>
+                            <button onClick={() => openEditSubForm(cat.key, sub)} style={{ color: C.purple }} className="p-0.5"><Pencil size={12} /></button>
+                            <button onClick={() => deleteSub(cat.key, sub.key)} style={{ color: C.gray }} className="p-0.5"><Trash2 size={12} /></button>
+                          </div>
+                        );
+                      })}
+                      <button onClick={() => openNewSubForm(cat.key)} style={{ color: C.purple }} className="text-xs font-bold flex items-center gap-1 mt-1"><Plus size={12} />เพิ่มหมวดย่อย</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <button onClick={openNewCategoryForm} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-sm font-bold"><Plus size={15} />เพิ่มหมวดหมู่</button>
+          </div>
+        )}
+
+        {section === "cards" && (
+          <div className="flex flex-col gap-2">
+            {creditCards.map((cd) => {
+              const CardIcon = resolveIcon(cd.icon);
+              return (
+                <div key={cd.name} style={{ background: C.bg }} className="flex items-center gap-2.5 rounded-2xl p-3">
+                  <div style={{ background: cd.color }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><CardIcon size={15} color="#fff" /></div>
+                  <span className="text-sm font-bold flex-1">{cd.name}</span>
+                  <button onClick={() => openEditCardForm(cd)} style={{ color: C.purple }} className="p-1"><Pencil size={14} /></button>
+                  <button onClick={() => deleteCard(cd.name)} style={{ color: creditCards.length <= 1 ? C.graySoft : C.gray }} className="p-1" disabled={creditCards.length <= 1}><Trash2 size={14} /></button>
+                </div>
+              );
+            })}
+            <button onClick={openNewCardForm} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-sm font-bold"><Plus size={15} />เพิ่มบัตรเครดิต</button>
+            <p className="text-[11px] mt-1" style={{ color: C.inkSoft }}>เลือกไอคอน+สีเป็นสัญลักษณ์แทนได้ (ไม่ใช่โลโก้จริงของธนาคาร) ตั้งวันตัดรอบ/ครบกำหนดของแต่ละบัตรได้ที่แท็บ "Fix Cost"</p>
+          </div>
+        )}
+      </div>
+
+      {form && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.55)", zIndex: 410, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setForm(null)}>
+          <div style={{ background: C.card, borderRadius: 24, padding: 20, maxWidth: 340, width: "100%", maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">{form.mode.startsWith("new") ? "เพิ่มรายการ" : "แก้ไขรายการ"}</p>
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ชื่อ" style={{ ...inputStyle, marginBottom: 14 }} autoFocus />
+            <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>ไอคอน</p>
+            <div className="grid grid-cols-6 gap-2 mb-4 max-h-32 overflow-y-auto">
+              {ICON_NAMES.map((name) => {
+                const IconComp = ICON_LIBRARY[name];
+                const active = form.icon === name;
+                return (
+                  <button key={name} onClick={() => setForm({ ...form, icon: name })} style={{ background: active ? form.color : C.graySoft }} className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0">
+                    <IconComp size={15} color={active ? "#fff" : C.inkSoft} />
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>สี</p>
+            <div className="flex flex-wrap gap-2 mb-5">
+              {CATEGORY_COLOR_PALETTE.map((c) => (
+                <button key={c} onClick={() => setForm({ ...form, color: c })} style={{ background: c, width: 26, height: 26, borderRadius: 26, border: form.color === c ? `3px solid ${C.ink}` : "3px solid transparent" }} />
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setForm(null)} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2.5 rounded-full text-sm font-bold">ยกเลิก</button>
+              <button onClick={saveForm} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex-1 py-2.5 rounded-full text-sm font-bold">บันทึก</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
