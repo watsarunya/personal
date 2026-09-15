@@ -485,7 +485,7 @@ export default function FinanceTracker() {
           <Overview transactions={transactions} alerts={visibleAlerts} onDismissAlert={dismissAlert} setTab={setTab} expenseCategories={expenseCategories} />
         )}
         {tab === "transactions" && (
-          <TransactionsTab transactions={transactions} setTransactions={setTransactions} profiles={profiles} activeProfileId={activeProfileId} budgets={budgets} setTab={setTab} expenseCategories={expenseCategories} creditCards={creditCards} />
+          <TransactionsTab transactions={transactions} setTransactions={setTransactions} budgets={budgets} setTab={setTab} expenseCategories={expenseCategories} creditCards={creditCards} />
         )}
         {tab === "savings" && (
           <SavingsTab savings={savings} setSavings={setSavings} investPlan={investPlan} setInvestPlan={setInvestPlan} holdings={holdings} setHoldings={setHoldings} />
@@ -621,60 +621,35 @@ function BottomNav({ tab, setTab, debtAlertCount }) {
 /*  identity + invite flow (share the same URL/sync code)            */
 /* ---------------------------------------------------------------- */
 function ProfilePickerModal({ profiles, setProfiles, activeProfileId, setActiveProfileId, onClose }) {
-  const [name, setName] = useState("");
-  const [color, setColor] = useState(PROFILE_COLORS[profiles.length % PROFILE_COLORS.length]);
+  const mine = profiles[0] || null;
+  const [name, setName] = useState(mine?.name || "");
+  const [color, setColor] = useState(mine?.color || PROFILE_COLORS[0]);
 
-  function addProfile() {
-    if (!name.trim()) return;
-    const p = { id: uid(), name: name.trim(), color };
-    setProfiles((prev) => [...prev, p]);
+  function save() {
+    const nm = name.trim();
+    if (!nm) { setProfiles([]); setActiveProfileId(null); onClose(); return; }
+    const p = { id: mine?.id || uid(), name: nm, color };
+    setProfiles([p]);
     setActiveProfileId(p.id);
-    setName("");
-  }
-  function removeProfile(id) {
-    setProfiles((prev) => prev.filter((p) => p.id !== id));
-    if (activeProfileId === id) setActiveProfileId(null);
+    onClose();
   }
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.45)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
-      <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 420, width: "100%", maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg mb-1">ป้ายชื่อผู้บันทึก</p>
-        <p className="text-xs mb-4" style={{ color: C.inkSoft }}>ใช้ติดป้ายว่ารายการไหนใครบันทึก ภายในข้อมูลส่วนตัวของคุณเท่านั้น — คนอื่นจะไม่เห็นข้อมูลนี้ เว้นแต่คุณจะให้รหัสบัญชีของคุณกับเขาโดยตรง</p>
+      <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 380, width: "100%" }} onClick={(e) => e.stopPropagation()}>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg mb-1">ชื่อของคุณ</p>
+        <p className="text-xs mb-4" style={{ color: C.inkSoft }}>ใช้แสดงในหน้าทักทายเท่านั้น ข้อมูลทั้งหมดในแอปนี้เป็นของคุณคนเดียวอยู่แล้ว</p>
 
-        {profiles.length > 0 && (
-          <div className="flex flex-col gap-2 mb-4">
-            {profiles.map((p) => (
-              <div key={p.id} style={{ background: activeProfileId === p.id ? C.purpleSoft : C.bg, border: activeProfileId === p.id ? `2px solid ${C.purple}` : "2px solid transparent" }} className="flex items-center gap-2.5 px-3 py-2.5 rounded-2xl">
-                <button onClick={() => { setActiveProfileId(p.id); onClose(); }} className="flex items-center gap-2.5 flex-1 min-w-0 text-left">
-                  <div style={{ background: p.color }} className="w-9 h-9 rounded-full flex items-center justify-center shrink-0">
-                    <span style={{ fontFamily: "'Manrope', sans-serif", color: "#fff" }} className="font-bold">{p.name.trim()[0]?.toUpperCase()}</span>
-                  </div>
-                  <span className="text-sm font-bold truncate">{p.name}</span>
-                  {activeProfileId === p.id && <CheckCircle2 size={16} color={C.purple} className="shrink-0" />}
-                </button>
-                <button onClick={() => removeProfile(p.id)} style={{ color: C.gray }} className="p-1 shrink-0"><Trash2 size={13} /></button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <button onClick={() => { setActiveProfileId(null); onClose(); }} style={{ background: C.graySoft, color: C.inkSoft }} className="w-full py-2.5 rounded-full text-sm font-bold mb-4">ไม่ระบุตัวตน</button>
-
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-sm mb-2">เพิ่มป้ายชื่อใหม่</p>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น ชื่อของคุณ หรือคู่สมรส" style={{ ...inputStyle, marginBottom: 10 }} />
-        <div className="flex flex-wrap gap-2 mb-3">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อของคุณ" style={{ ...inputStyle, marginBottom: 12 }} autoFocus />
+        <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>สีประจำตัว</p>
+        <div className="flex flex-wrap gap-2 mb-5">
           {PROFILE_COLORS.map((c) => (
             <button key={c} onClick={() => setColor(c)} style={{ background: c, width: 28, height: 28, borderRadius: 28, border: color === c ? `3px solid ${C.ink}` : "3px solid transparent" }} />
           ))}
         </div>
-        <button onClick={addProfile} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-full text-sm font-bold mb-3"><Plus size={16} /> เพิ่มป้ายชื่อ</button>
+        <button onClick={save} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-full text-sm font-bold mb-3"><CheckCircle2 size={16} /> บันทึก</button>
 
-        <div style={{ background: C.yellowSoft }} className="rounded-2xl px-3.5 py-3">
-          <p className="text-[11px]" style={{ color: "#7A5B00" }}>ต้องการให้อีกคนมีพื้นที่ข้อมูลของตัวเองแยกต่างหาก (ไม่เห็นของคุณ) ให้เขาเปิดลิงก์นี้เองโดยไม่คัดลอกรหัสบัญชีจากคุณไป ระบบจะสร้างพื้นที่ส่วนตัวใหม่ให้เขาอัตโนมัติ — ดูรหัสบัญชีของคุณได้ที่ป้ายมุมขวาบน</p>
-        </div>
-
-        <button onClick={onClose} style={{ color: C.inkSoft }} className="w-full py-2 text-xs font-bold mt-3">ปิดหน้าต่างนี้</button>
+        <button onClick={onClose} style={{ color: C.inkSoft }} className="w-full py-2 text-xs font-bold">ปิดหน้าต่างนี้</button>
       </div>
     </div>
   );
@@ -849,7 +824,7 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
           <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">สัดส่วนรายจ่ายตามหมวดหมู่</p>
           {byCatTotal > 0 && <span className="text-xs font-bold" style={{ color: C.inkSoft }}>เฉลี่ยรวม {fmtTHB(byCatTotal / daysInPeriod)}/วัน</span>}
         </div>
-        {byCat.length > 0 && <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>คำนวณจาก {daysInPeriod} วันในช่วงนี้ · รวมทุกช่องทางชำระเงิน (เงินสด/โอน/บัตรเครดิต)</p>}
+        {byCat.length > 0 && <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>คำนวณจาก {daysInPeriod} วันในช่วงนี้ · รวมทุกช่องทางชำระเงิน (เงินสด/โอน/บัตรเครดิต) · ยอดของหมวดหมู่หลักรวมหมวดหมู่ย่อยทั้งหมดไว้แล้ว</p>}
         {byCat.length === 0 ? <EmptyNote text="ยังไม่มีรายจ่ายในช่วงนี้" /> : (
           <div className="flex flex-col sm:flex-row items-center gap-4">
             <div style={{ width: "100%", maxWidth: 200, height: 190 }}>
@@ -915,7 +890,7 @@ function AlertBanner({ alerts, onDismiss }) {
 function EmptyNote({ text }) { return <p className="text-sm py-6 text-center" style={{ color: C.inkSoft }}>{text}</p>; }
 
 /* ---------------------------------------------------------------- */
-function TransactionsTab({ transactions, setTransactions, profiles, activeProfileId, budgets = {}, setTab, expenseCategories, creditCards }) {
+function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, expenseCategories, creditCards }) {
   const [editingId, setEditingId] = useState(null);
   const [type, setType] = useState("expense");
   const [amount, setAmount] = useState("");
@@ -926,7 +901,9 @@ function TransactionsTab({ transactions, setTransactions, profiles, activeProfil
   const [date, setDate] = useState(todayStr());
   const [note, setNote] = useState("");
   const [filter, setFilter] = useState("all");
-  const [profileFilter, setProfileFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [toast, setToast] = useState(null);
   const [catError, setCatError] = useState(false);
   const [payError, setPayError] = useState(false);
@@ -985,7 +962,7 @@ function TransactionsTab({ transactions, setTransactions, profiles, activeProfil
         ? { ...t, type, amount: amt, category, subcategory: type === "expense" ? subcategory : null, date, payment, card: payment === "credit" ? card : null, note: note.trim() }
         : t));
     } else {
-      setTransactions((prev) => [{ id: uid(), type, amount: amt, category, subcategory: type === "expense" ? subcategory : null, date, payment, card: payment === "credit" ? card : null, note: note.trim(), profileId: activeProfileId || null }, ...prev]);
+      setTransactions((prev) => [{ id: uid(), type, amount: amt, category, subcategory: type === "expense" ? subcategory : null, date, payment, card: payment === "credit" ? card : null, note: note.trim() }, ...prev]);
     }
     showToast(wasEditing ? "แก้ไขรายการสำเร็จ ✓" : "บันทึกรายการสำเร็จ ✓");
     resetForm();
@@ -994,7 +971,10 @@ function TransactionsTab({ transactions, setTransactions, profiles, activeProfil
 
   const sorted = [...transactions].sort((a, b) => (a.date < b.date ? 1 : -1));
   const byType = filter === "all" ? sorted : sorted.filter((t) => t.type === filter);
-  const visible = profileFilter === "all" ? byType : byType.filter((t) => (t.profileId || "none") === profileFilter);
+  let visible = byType;
+  if (categoryFilter !== "all") visible = visible.filter((t) => resolveMainCategory(expenseCategories, t.category) === categoryFilter);
+  if (dateFrom) visible = visible.filter((t) => t.date >= dateFrom);
+  if (dateTo) visible = visible.filter((t) => t.date <= dateTo);
 
   return (
     <div className="flex flex-col gap-4">
@@ -1175,16 +1155,25 @@ function TransactionsTab({ transactions, setTransactions, profiles, activeProfil
             ))}
           </div>
         </div>
-        {profiles.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-2.5">
-            <button onClick={() => setProfileFilter("all")} style={{ background: profileFilter === "all" ? C.purple : C.graySoft, color: profileFilter === "all" ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold">ทุกคน</button>
-            {profiles.map((p) => (
-              <button key={p.id} onClick={() => setProfileFilter(p.id)} style={{ background: profileFilter === p.id ? p.color : C.graySoft, color: profileFilter === p.id ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold flex items-center gap-1">
-                <span style={{ background: profileFilter === p.id ? "rgba(255,255,255,0.4)" : p.color, width: 12, height: 12, borderRadius: 12 }} />{p.name}
-              </button>
-            ))}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+            <option value="all">ทุกหมวดหมู่</option>
+            <optgroup label="รายจ่าย">
+              {expenseCategories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </optgroup>
+            <optgroup label="รายรับ">
+              {INCOME_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </optgroup>
+          </select>
+          <div className="flex items-center gap-1.5 text-xs" style={{ color: C.inkSoft }}>
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "7px 8px" }} />
+            <span>ถึง</span>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "7px 8px" }} />
           </div>
-        )}
+          {(categoryFilter !== "all" || dateFrom || dateTo) && (
+            <button onClick={() => { setCategoryFilter("all"); setDateFrom(""); setDateTo(""); }} style={{ color: C.coral }} className="text-xs font-bold">ล้างตัวกรอง</button>
+          )}
+        </div>
         {visible.length === 0 ? <EmptyNote text="ยังไม่มีรายการ — เริ่มบันทึกรายการแรกของคุณด้านบน" /> : (
           <div className="flex flex-col gap-2">
             {visible.map((t) => {
@@ -1192,16 +1181,10 @@ function TransactionsTab({ transactions, setTransactions, profiles, activeProfil
               const subMeta = t.subcategory && t.type === "expense" ? subcategoryMeta(expenseCategories, t.category, t.subcategory) : null;
               const Icon = resolveIcon(subMeta ? subMeta.icon : meta.icon);
               const color = t.type === "expense" ? categoryColor(expenseCategories, subMeta ? subMeta.key : t.category) : categoryColor(INCOME_CATEGORIES, t.category);
-              const loggedBy = t.profileId ? profileById(profiles, t.profileId) : null;
               return (
                 <div key={t.id} style={{ background: C.card, border: editingId === t.id ? `2px solid ${C.purple}` : "none" }} className="flex items-center gap-3 px-3.5 py-3 rounded-2xl shadow-sm">
-                  <div style={{ background: color }} className="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 relative">
+                  <div style={{ background: color }} className="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0">
                     <Icon size={16} color="#fff" />
-                    {loggedBy && (
-                      <span title={loggedBy.name} style={{ background: loggedBy.color, width: 14, height: 14, borderRadius: 14, border: `2px solid ${C.card}`, position: "absolute", bottom: -3, right: -3, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <span style={{ fontSize: 8, color: "#fff", fontFamily: "'Manrope', sans-serif" }} className="font-bold">{loggedBy.name.trim()[0]?.toUpperCase()}</span>
-                      </span>
-                    )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-bold truncate">{meta.label}{subMeta ? ` · ${subMeta.label}` : ""}{t.note ? ` · ${t.note}` : ""}</p>
@@ -1373,7 +1356,6 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions }) {
       payment: "transfer",
       card: null,
       note: d.name,
-      profileId: null,
     }, ...prev]);
   }
   function togglePaid(id) {
