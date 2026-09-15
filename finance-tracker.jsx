@@ -16,24 +16,24 @@ import {
 /*  Design tokens — playful, colorful "quiz app" energy              */
 /* ---------------------------------------------------------------- */
 const C = {
-  bg: "#F4F4FC",
+  bg: "#F6F5FC",
   card: "#FFFFFF",
-  ink: "#262638",
-  inkSoft: "#8C8CA8",
-  purple: "#7B7FE8",
-  purpleDeep: "#5C60D6",
-  purpleSoft: "#E9E9FB",
+  ink: "#1B1B2F",
+  inkSoft: "#8C8CA0",
+  purple: "#6C5CE7",
+  purpleDeep: "#4B3FC7",
+  purpleSoft: "#EDEBFC",
   yellow: "#FFC93C",
   yellowDeep: "#F5AF00",
   yellowSoft: "#FFF3D6",
   coral: "#FF7A59",
   coralSoft: "#FFE3DA",
-  teal: "#2FC59B",
+  teal: "#2ECC9B",
   tealSoft: "#DAF7EE",
   blue: "#4FB6E8",
   blueSoft: "#DEF2FC",
-  pink: "#F76BAB",
-  pinkSoft: "#FDE3EF",
+  pink: "#FF6B9D",
+  pinkSoft: "#FDE3EC",
   gray: "#B7BACB",
   graySoft: "#EDEDF4",
   brown: "#C97B3E",
@@ -41,7 +41,7 @@ const C = {
 };
 
 const FONT_IMPORT = `
-@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Nunito:wght@400;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap');
 `;
 
 const CAT_COLOR = {
@@ -57,20 +57,26 @@ const CAT_SOFT = {
   salary: C.tealSoft, extra: C.blueSoft, other_income: C.graySoft,
 };
 
-const EXPENSE_CATEGORIES = [
-  { key: "food", label: "อาหาร", icon: Utensils },
+const FOOD_SUBCATEGORIES = [
+  { key: "seven11", label: "7-Eleven", icon: Store },
+  { key: "grab", label: "Grab", icon: Bike },
   { key: "drink", label: "เครื่องดื่ม", icon: Coffee },
+  { key: "lineman", label: "Lineman", icon: Package },
+];
+const EXPENSE_CATEGORIES = [
+  { key: "food", label: "อาหาร", icon: Utensils, subcategories: FOOD_SUBCATEGORIES },
   { key: "car", label: "รถยนต์", icon: Car },
   { key: "beauty", label: "ความงาม", icon: Sparkles },
   { key: "home", label: "บ้าน", icon: Home },
   { key: "cat", label: "แมว", icon: Cat },
   { key: "exercise", label: "ออกกำลังกาย", icon: Dumbbell },
-  { key: "seven11", label: "7-Eleven", icon: Store },
-  { key: "grab", label: "Grab", icon: Bike },
-  { key: "lineman", label: "Lineman", icon: Package },
   { key: "creditcard", label: "Credit Card", icon: CreditCard },
   { key: "others", label: "อื่นๆ", icon: MoreHorizontal },
 ];
+function subcategoryMeta(catKey, subKey) {
+  const cat = EXPENSE_CATEGORIES.find((c) => c.key === catKey);
+  return cat?.subcategories?.find((s) => s.key === subKey) || null;
+}
 const INCOME_CATEGORIES = [
   { key: "salary", label: "เงินเดือน", icon: Landmark },
   { key: "extra", label: "รายได้เสริม", icon: TrendingUp },
@@ -86,6 +92,8 @@ const TAB_COLOR = {
 const INCOME_TYPE_PRESETS = ["เงินเดือนหลัก", "รายได้เสริม", "โบนัส", "ธุรกิจส่วนตัว", "อื่นๆ"];
 const FIXCOST_TYPE_PRESETS = ["ค่าเช่า/ผ่อนบ้าน", "ค่าน้ำ-ไฟ-เน็ต", "ประกัน", "ผ่อนรถ", "สมาชิก/สับสคริปชัน", "ค่าเทอม", "อื่นๆ"];
 const INVEST_CATEGORY_PRESETS = ["หุ้น", "กองทุนรวม", "ทองคำ", "คริปโทเคอร์เรนซี", "พันธบัตร/ตราสารหนี้", "ประกันสะสมทรัพย์", "อสังหาริมทรัพย์", "อื่นๆ"];
+const PROFILE_COLORS = [C.purple, C.coral, C.teal, C.blue, C.pink, C.yellowDeep, C.brown, "#9B7BF0"];
+function profileById(profiles, id) { return profiles.find((p) => p.id === id) || null; }
 const INVEST_PALETTE = [C.purple, C.teal, C.blue, C.coral, C.pink, C.yellowDeep, "#9B7BF0", C.gray];
 
 function investItemAmount(item, totalPool, ym, overrides) {
@@ -221,6 +229,9 @@ export default function FinanceTracker() {
     payment: 0, dueDay: 5, rateChanges: [], paidMonths: {},
   });
   const [dismissedAlerts, setDismissedAlerts] = useState({});
+  const [profiles, setProfiles] = useState([]);
+  const [activeProfileId, setActiveProfileId] = useState(null);
+  const [showProfilePicker, setShowProfilePicker] = useState(false);
   const [ready, setReady] = useState(false);
   const loadedRef = useRef(false);
 
@@ -254,6 +265,7 @@ export default function FinanceTracker() {
           setHoldings(data.holdings || []);
           if (data.homeLoan) setHomeLoan((prev) => ({ ...prev, ...data.homeLoan }));
           if (data.dismissedAlerts) setDismissedAlerts(data.dismissedAlerts);
+          setProfiles(data.profiles || []);
         }
       } catch (e) { /* fresh start */ }
       finally { loadedRef.current = true; setReady(true); }
@@ -266,12 +278,12 @@ export default function FinanceTracker() {
       try {
         await window.storage.set(STORAGE_KEY, JSON.stringify({
           transactions, savings, debts, budgets,
-          planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts,
+          planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles,
         }));
       } catch (e) { /* ignore */ }
     }, 250);
     return () => clearTimeout(t);
-  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts]);
+  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles]);
 
   // Sync the home loan installment into Monthly Plan's Fix Cost list automatically
   useEffect(() => {
@@ -351,6 +363,10 @@ export default function FinanceTracker() {
     });
   }, [transactions, cardSettings]);
 
+  useEffect(() => {
+    if (profiles.length === 1 && !activeProfileId) setActiveProfileId(profiles[0].id);
+  }, [profiles, activeProfileId]);
+
   const streak = useMemo(() => computeStreak(transactions), [transactions]);
   const points = transactions.length * 5 + savings.length * 15 + debts.filter((d) => d.paid).length * 10;
 
@@ -400,30 +416,16 @@ export default function FinanceTracker() {
   }, [budgets, monthSpend, debts, planIncomeItems, planFixCostItems, planOverrides, monthKey, investPlan]);
 
   const visibleAlerts = useMemo(
-    () => alerts.filter((a) => !dismissedAlerts[a.id + "|" + a.text]),
+    () => alerts.filter((a) => !dismissedAlerts[a.id] || dismissedAlerts[a.id] < todayStr()),
     [alerts, dismissedAlerts]
   );
   function dismissAlert(a) {
-    setDismissedAlerts((prev) => ({ ...prev, [a.id + "|" + a.text]: true }));
+    setDismissedAlerts((prev) => ({ ...prev, [a.id]: addMonthsToDate(todayStr(), 1) }));
   }
-
-  const badges = useMemo(() => {
-    const totalSaving = savings.filter((s) => s.kind === "saving").reduce((a, s) => a + s.amount, 0);
-    const totalInvest = savings.filter((s) => s.kind === "investment").reduce((a, s) => a + s.amount, 0);
-    const anyOverBudget = Object.entries(budgets).some(([k, limit]) => limit && (monthSpend[k] || 0) >= limit);
-    return [
-      { key: "starter", label: "นักบันทึกมือใหม่", icon: Star, color: C.yellowDeep, unlocked: transactions.length >= 1 },
-      { key: "streak7", label: "ขยัน 7 วันติด", icon: Flame, color: C.coral, unlocked: streak >= 7 },
-      { key: "saver", label: "นักออมมือทอง", icon: PiggyBank, color: C.teal, unlocked: totalSaving >= 1000 },
-      { key: "investor", label: "นักลงทุนตัวจริง", icon: Rocket, color: C.purple, unlocked: totalInvest >= 1000 },
-      { key: "debtfree", label: "จัดการหนี้เก่ง", icon: ShieldCheck, color: C.blue, unlocked: debts.length > 0 && debts.some((d) => d.paid) },
-      { key: "budgetpro", label: "งบประมาณมือโปร", icon: Award, color: C.pink, unlocked: Object.keys(budgets).length > 0 && !anyOverBudget },
-    ];
-  }, [transactions, savings, debts, budgets, monthSpend, streak]);
 
   if (!ready) {
     return (
-      <div style={{ background: C.bg, minHeight: 480, fontFamily: "'Nunito', sans-serif" }} className="w-full flex items-center justify-center p-10">
+      <div style={{ background: C.bg, minHeight: 480, fontFamily: "'Inter', sans-serif" }} className="w-full flex items-center justify-center p-10">
         <style>{FONT_IMPORT}</style>
         <p style={{ color: C.inkSoft }}>กำลังโหลด...</p>
       </div>
@@ -431,16 +433,16 @@ export default function FinanceTracker() {
   }
 
   return (
-    <div style={{ background: C.bg, fontFamily: "'Nunito', sans-serif", color: C.ink }} className="w-full min-h-full pb-6">
+    <div style={{ background: C.bg, fontFamily: "'Inter', sans-serif", color: C.ink }} className="w-full min-h-full pb-24">
       <style>{FONT_IMPORT}</style>
-      <Header streak={streak} points={points} alertCount={visibleAlerts.length} budgetPct={budgetPct} />
-      <TabPills tab={tab} setTab={setTab} alertCount={visibleAlerts.length} />
+      <Header streak={streak} points={points} alertCount={visibleAlerts.length} budgetPct={budgetPct}
+        activeProfile={profileById(profiles, activeProfileId)} onOpenProfilePicker={() => setShowProfilePicker(true)} />
       <main className="px-4 md:px-6 max-w-2xl mx-auto flex flex-col gap-4 mt-4">
         {tab === "overview" && (
-          <Overview transactions={transactions} alerts={visibleAlerts} onDismissAlert={dismissAlert} badges={badges} setTab={setTab} />
+          <Overview transactions={transactions} alerts={visibleAlerts} onDismissAlert={dismissAlert} setTab={setTab} />
         )}
         {tab === "transactions" && (
-          <TransactionsTab transactions={transactions} setTransactions={setTransactions} />
+          <TransactionsTab transactions={transactions} setTransactions={setTransactions} profiles={profiles} activeProfileId={activeProfileId} budgets={budgets} setTab={setTab} />
         )}
         {tab === "savings" && (
           <SavingsTab savings={savings} setSavings={setSavings} investPlan={investPlan} setInvestPlan={setInvestPlan} holdings={holdings} setHoldings={setHoldings} />
@@ -465,24 +467,36 @@ export default function FinanceTracker() {
           <HomePlanningTab homeLoan={homeLoan} setHomeLoan={setHomeLoan} planOverrides={planOverrides} setPlanOverrides={setPlanOverrides} planFixCostItems={planFixCostItems} setPlanFixCostItems={setPlanFixCostItems} />
         )}
       </main>
+      <BottomNav tab={tab} setTab={setTab} alertCount={visibleAlerts.length} />
+      {showProfilePicker && (
+        <ProfilePickerModal
+          profiles={profiles} setProfiles={setProfiles}
+          activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId}
+          onClose={() => setShowProfilePicker(false)}
+        />
+      )}
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- */
-function Header({ streak, points, alertCount, budgetPct }) {
+function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenProfilePicker }) {
   return (
     <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, borderRadius: "0 0 28px 28px" }} className="px-5 pt-6 pb-5 text-white">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div style={{ background: C.yellow }} className="w-11 h-11 rounded-full flex items-center justify-center shrink-0 shadow-sm">
-            <Wallet size={20} color={C.purpleDeep} strokeWidth={2.3} />
+        <button onClick={onOpenProfilePicker} className="flex items-center gap-3 text-left">
+          <div style={{ background: activeProfile ? activeProfile.color : C.yellow }} className="w-11 h-11 rounded-full flex items-center justify-center shrink-0 shadow-sm">
+            {activeProfile ? (
+              <span style={{ fontFamily: "'Manrope', sans-serif", color: "#fff" }} className="text-lg font-bold">{activeProfile.name.trim()[0]?.toUpperCase()}</span>
+            ) : (
+              <Wallet size={20} color={C.purpleDeep} strokeWidth={2.3} />
+            )}
           </div>
           <div>
-            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-lg font-bold leading-tight">สวัสดี 👋</p>
-            <p style={{ color: "#DCDCFB" }} className="text-xs leading-tight">มาบันทึกเงินกันวันนี้ไหม?</p>
+            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-lg font-bold leading-tight">{activeProfile ? `สวัสดี, ${activeProfile.name} 👋` : "สวัสดี 👋"}</p>
+            <p style={{ color: "#DCDCFB" }} className="text-xs leading-tight">{activeProfile ? "แตะเพื่อสลับผู้ใช้งาน" : "แตะเพื่อตั้งชื่อผู้ใช้งาน"}</p>
           </div>
-        </div>
+        </button>
         <div className="flex items-center gap-2">
           {streak > 0 && (
             <div style={{ background: "rgba(255,255,255,0.18)" }} className="flex items-center gap-1 px-2.5 py-1.5 rounded-full">
@@ -514,7 +528,7 @@ function Header({ streak, points, alertCount, budgetPct }) {
   );
 }
 
-function TabPills({ tab, setTab, alertCount }) {
+function BottomNav({ tab, setTab, alertCount }) {
   const items = [
     { key: "overview", label: "ภาพรวม", icon: Wallet },
     { key: "transactions", label: "รายรับ-จ่าย", icon: ArrowLeftRight },
@@ -525,34 +539,117 @@ function TabPills({ tab, setTab, alertCount }) {
     { key: "homeLoan", label: "ผ่อนบ้าน", icon: Home },
   ];
   return (
-    <div className="flex gap-2 overflow-x-auto px-4 md:px-6 max-w-2xl mx-auto mt-4 pb-1" style={{ scrollbarWidth: "none" }}>
-      {items.map((it) => {
-        const active = tab === it.key;
-        const Icon = it.icon;
-        const color = TAB_COLOR[it.key];
-        return (
-          <button key={it.key} onClick={() => setTab(it.key)}
-            style={{ background: active ? color : C.card, color: active ? "#fff" : C.inkSoft, border: active ? "none" : `1px solid ${C.graySoft}` }}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-bold whitespace-nowrap shrink-0 shadow-sm relative">
-            <Icon size={14} />{it.label}
-            {!!it.badge && (
-              <span style={{ background: C.coral, color: "#fff" }} className="absolute -top-1.5 -right-1.5 text-[10px] leading-none rounded-full w-4 h-4 flex items-center justify-center font-bold">
-                {it.badge}
-              </span>
-            )}
-          </button>
-        );
-      })}
+    <div style={{ background: C.card, borderTop: `1px solid ${C.graySoft}`, paddingBottom: "max(6px, env(safe-area-inset-bottom))" }} className="fixed bottom-0 left-0 right-0 z-40 shadow-[0_-2px_12px_rgba(0,0,0,0.06)]">
+      <div className="flex gap-0.5 overflow-x-auto max-w-2xl mx-auto px-1 pt-2" style={{ scrollbarWidth: "none" }}>
+        {items.map((it) => {
+          const active = tab === it.key;
+          const Icon = it.icon;
+          const color = TAB_COLOR[it.key];
+          return (
+            <button key={it.key} onClick={() => setTab(it.key)} className="flex flex-col items-center gap-1 px-3 py-1.5 rounded-2xl shrink-0 relative min-w-[62px]">
+              <Icon size={19} color={active ? color : C.gray} strokeWidth={active ? 2.4 : 2} />
+              <span style={{ color: active ? color : C.gray }} className="text-[10px] font-bold whitespace-nowrap leading-none">{it.label}</span>
+              {!!it.badge && (
+                <span style={{ background: C.coral, color: "#fff" }} className="absolute top-0 right-1.5 text-[9px] leading-none rounded-full w-3.5 h-3.5 flex items-center justify-center font-bold">
+                  {it.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- */
-function Overview({ transactions, alerts, onDismissAlert, badges, setTab }) {
+/*  Profile picker — lightweight multi-person "who's using this"     */
+/*  identity + invite flow (share the same URL/sync code)            */
+/* ---------------------------------------------------------------- */
+function ProfilePickerModal({ profiles, setProfiles, activeProfileId, setActiveProfileId, onClose }) {
+  const [name, setName] = useState("");
+  const [color, setColor] = useState(PROFILE_COLORS[profiles.length % PROFILE_COLORS.length]);
+
+  function addProfile() {
+    if (!name.trim()) return;
+    const p = { id: uid(), name: name.trim(), color };
+    setProfiles((prev) => [...prev, p]);
+    setActiveProfileId(p.id);
+    setName("");
+  }
+  function removeProfile(id) {
+    setProfiles((prev) => prev.filter((p) => p.id !== id));
+    if (activeProfileId === id) setActiveProfileId(null);
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.45)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
+      <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 420, width: "100%", maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg mb-1">ป้ายชื่อผู้บันทึก</p>
+        <p className="text-xs mb-4" style={{ color: C.inkSoft }}>ใช้ติดป้ายว่ารายการไหนใครบันทึก ภายในข้อมูลส่วนตัวของคุณเท่านั้น — คนอื่นจะไม่เห็นข้อมูลนี้ เว้นแต่คุณจะให้รหัสบัญชีของคุณกับเขาโดยตรง</p>
+
+        {profiles.length > 0 && (
+          <div className="flex flex-col gap-2 mb-4">
+            {profiles.map((p) => (
+              <div key={p.id} style={{ background: activeProfileId === p.id ? C.purpleSoft : C.bg, border: activeProfileId === p.id ? `2px solid ${C.purple}` : "2px solid transparent" }} className="flex items-center gap-2.5 px-3 py-2.5 rounded-2xl">
+                <button onClick={() => { setActiveProfileId(p.id); onClose(); }} className="flex items-center gap-2.5 flex-1 min-w-0 text-left">
+                  <div style={{ background: p.color }} className="w-9 h-9 rounded-full flex items-center justify-center shrink-0">
+                    <span style={{ fontFamily: "'Manrope', sans-serif", color: "#fff" }} className="font-bold">{p.name.trim()[0]?.toUpperCase()}</span>
+                  </div>
+                  <span className="text-sm font-bold truncate">{p.name}</span>
+                  {activeProfileId === p.id && <CheckCircle2 size={16} color={C.purple} className="shrink-0" />}
+                </button>
+                <button onClick={() => removeProfile(p.id)} style={{ color: C.gray }} className="p-1 shrink-0"><Trash2 size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button onClick={() => { setActiveProfileId(null); onClose(); }} style={{ background: C.graySoft, color: C.inkSoft }} className="w-full py-2.5 rounded-full text-sm font-bold mb-4">ไม่ระบุตัวตน</button>
+
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-sm mb-2">เพิ่มป้ายชื่อใหม่</p>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น ชื่อของคุณ หรือคู่สมรส" style={{ ...inputStyle, marginBottom: 10 }} />
+        <div className="flex flex-wrap gap-2 mb-3">
+          {PROFILE_COLORS.map((c) => (
+            <button key={c} onClick={() => setColor(c)} style={{ background: c, width: 28, height: 28, borderRadius: 28, border: color === c ? `3px solid ${C.ink}` : "3px solid transparent" }} />
+          ))}
+        </div>
+        <button onClick={addProfile} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-full text-sm font-bold mb-3"><Plus size={16} /> เพิ่มป้ายชื่อ</button>
+
+        <div style={{ background: C.yellowSoft }} className="rounded-2xl px-3.5 py-3">
+          <p className="text-[11px]" style={{ color: "#7A5B00" }}>ต้องการให้อีกคนมีพื้นที่ข้อมูลของตัวเองแยกต่างหาก (ไม่เห็นของคุณ) ให้เขาเปิดลิงก์นี้เองโดยไม่คัดลอกรหัสบัญชีจากคุณไป ระบบจะสร้างพื้นที่ส่วนตัวใหม่ให้เขาอัตโนมัติ — ดูรหัสบัญชีของคุณได้ที่ป้ายมุมขวาบน</p>
+        </div>
+
+        <button onClick={onClose} style={{ color: C.inkSoft }} className="w-full py-2 text-xs font-bold mt-3">ปิดหน้าต่างนี้</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+function Overview({ transactions, alerts, onDismissAlert, setTab }) {
   const [period, setPeriod] = useState("month");
   const [ref, setRef] = useState(new Date());
+  const [trendMonths, setTrendMonths] = useState(6);
 
   const hasToday = transactions.some((t) => t.date === todayStr());
+
+  const monthlyTrend = useMemo(() => {
+    const now = new Date();
+    const nowYm = ymOf(now);
+    const months = [];
+    for (let i = trendMonths - 1; i >= 0; i--) {
+      months.push(ymOf(new Date(now.getFullYear(), now.getMonth() - i, 1)));
+    }
+    return months.map((ym) => {
+      const total = transactions
+        .filter((t) => t.type === "expense" && t.payment !== "credit" && t.date.slice(0, 7) === ym)
+        .reduce((a, t) => a + Number(t.amount), 0);
+      const [y, m] = ym.split("-").map(Number);
+      return { ym, label: MONTH_ABBR_TH[m - 1], value: total, isCurrent: ym === nowYm };
+    });
+  }, [transactions, trendMonths]);
+  const trendAvg = monthlyTrend.length ? monthlyTrend.reduce((a, m) => a + m.value, 0) / monthlyTrend.length : 0;
 
   const range = useMemo(() => {
     const d = new Date(ref);
@@ -606,7 +703,7 @@ function Overview({ transactions, alerts, onDismissAlert, badges, setTab }) {
     <div className="flex flex-col gap-4">
       <button onClick={() => setTab("transactions")} style={{ background: hasToday ? `linear-gradient(135deg, ${C.teal}, #22A184)` : `linear-gradient(135deg, ${C.yellow}, ${C.yellowDeep})` }} className="w-full text-left rounded-3xl p-5 flex items-center justify-between shadow-sm">
         <div>
-          <p style={{ fontFamily: "'Baloo 2', sans-serif", color: hasToday ? "#fff" : C.purpleDeep }} className="text-lg font-bold mb-1">
+          <p style={{ fontFamily: "'Manrope', sans-serif", color: hasToday ? "#fff" : C.purpleDeep }} className="text-lg font-bold mb-1">
             {hasToday ? "เยี่ยม! วันนี้บันทึกแล้ว 🎉" : "ยังไม่ได้บันทึกวันนี้เลยนะ"}
           </p>
           <p className="text-sm" style={{ color: hasToday ? "#E4FBF3" : "#7A5B00" }}>
@@ -628,7 +725,7 @@ function Overview({ transactions, alerts, onDismissAlert, badges, setTab }) {
         </div>
         <div className="flex items-center gap-2 text-sm" style={{ color: C.inkSoft }}>
           <button onClick={() => shift(-1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-1.5 rounded-full"><ChevronLeft size={14} /></button>
-          <span style={{ fontFamily: "'Baloo 2', sans-serif", color: C.ink }} className="font-bold">{range.label}</span>
+          <span style={{ fontFamily: "'Manrope', sans-serif", color: C.ink }} className="font-bold">{range.label}</span>
           <button onClick={() => shift(1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-1.5 rounded-full"><ChevronRight size={14} /></button>
         </div>
       </div>
@@ -648,7 +745,32 @@ function Overview({ transactions, alerts, onDismissAlert, badges, setTab }) {
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-1">
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold">สัดส่วนรายจ่ายตามหมวดหมู่</p>
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">เปรียบเทียบรายจ่ายรายเดือน</p>
+          <div className="flex rounded-full overflow-hidden p-0.5" style={{ background: C.graySoft }}>
+            {[6, 12].map((n) => (
+              <button key={n} onClick={() => setTrendMonths(n)} style={{ background: trendMonths === n ? C.purple : "transparent", color: trendMonths === n ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold">{n} เดือน</button>
+            ))}
+          </div>
+        </div>
+        <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>เฉลี่ย {fmtTHB(trendAvg)}/เดือน · นับเฉพาะเงินสด/โอน (ไม่รวมบัตรเครดิต)</p>
+        <div style={{ width: "100%", height: 180 }}>
+          <ResponsiveContainer>
+            <BarChart data={monthlyTrend} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.graySoft} vertical={false} />
+              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 10 }} width={44} tickFormatter={(v) => v >= 1000 ? `${Math.round(v / 1000)}k` : v} />
+              <Tooltip formatter={(v) => fmtTHB(v)} />
+              <Bar dataKey="value" radius={[6, 6, 0, 0]}>
+                {monthlyTrend.map((e, i) => <Cell key={i} fill={e.isCurrent ? C.purple : C.purpleSoft} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
+        <div className="flex items-center justify-between mb-1">
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">สัดส่วนรายจ่ายตามหมวดหมู่</p>
           {byCatTotal > 0 && <span className="text-xs font-bold" style={{ color: C.inkSoft }}>เฉลี่ยรวม {fmtTHB(byCatTotal / daysInPeriod)}/วัน</span>}
         </div>
         {byCat.length > 0 && <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>คำนวณจาก {daysInPeriod} วันในช่วงนี้ · รวมทุกช่องทางชำระเงิน (เงินสด/โอน/บัตรเครดิต)</p>}
@@ -669,7 +791,7 @@ function Overview({ transactions, alerts, onDismissAlert, badges, setTab }) {
                 <div key={i} className="flex items-center justify-between text-sm">
                   <span className="flex items-center gap-2 font-semibold"><span style={{ width: 10, height: 10, borderRadius: 10, background: e.color }} />{e.name}</span>
                   <div className="text-right">
-                    <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold leading-tight">{fmtTHB(e.value)}</p>
+                    <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold leading-tight">{fmtTHB(e.value)}</p>
                     <p className="text-[10px] leading-tight" style={{ color: C.inkSoft }}>เฉลี่ย {fmtTHB(e.avgPerDay)}/วัน</p>
                   </div>
                 </div>
@@ -677,26 +799,6 @@ function Overview({ transactions, alerts, onDismissAlert, badges, setTab }) {
             </div>
           </div>
         )}
-      </div>
-
-      <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <div className="flex items-center justify-between mb-3">
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold">ป้ายรางวัลของฉัน</p>
-          <span className="text-xs font-bold" style={{ color: C.inkSoft }}>{badges.filter((b) => b.unlocked).length}/{badges.length}</span>
-        </div>
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
-          {badges.map((b) => {
-            const Icon = b.icon;
-            return (
-              <div key={b.key} className="flex flex-col items-center gap-1.5 text-center">
-                <div style={{ background: b.unlocked ? b.color : C.graySoft }} className="w-12 h-12 rounded-2xl flex items-center justify-center shadow-sm">
-                  {b.unlocked ? <Icon size={20} color="#fff" /> : <Lock size={16} color={C.gray} />}
-                </div>
-                <p className="text-[10px] font-semibold leading-tight" style={{ color: b.unlocked ? C.ink : C.gray }}>{b.label}</p>
-              </div>
-            );
-          })}
-        </div>
       </div>
     </div>
   );
@@ -710,7 +812,7 @@ function StatCard({ label, value, icon: Icon, color }) {
       </div>
       <div>
         <p className="text-[11px] font-semibold" style={{ color: C.inkSoft }}>{label}</p>
-        <p style={{ fontFamily: "'Baloo 2', sans-serif", color }} className="text-sm font-bold truncate">{fmtTHB(value)}</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif", color }} className="text-sm font-bold truncate">{fmtTHB(value)}</p>
       </div>
     </div>
   );
@@ -737,51 +839,102 @@ function AlertBanner({ alerts, onDismiss }) {
 function EmptyNote({ text }) { return <p className="text-sm py-6 text-center" style={{ color: C.inkSoft }}>{text}</p>; }
 
 /* ---------------------------------------------------------------- */
-function TransactionsTab({ transactions, setTransactions }) {
+function TransactionsTab({ transactions, setTransactions, profiles, activeProfileId, budgets = {}, setTab }) {
   const [editingId, setEditingId] = useState(null);
   const [type, setType] = useState("expense");
   const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState(EXPENSE_CATEGORIES[0].key);
+  const [category, setCategory] = useState(null);
+  const [subcategory, setSubcategory] = useState(null);
   const [payment, setPayment] = useState("cash");
   const [card, setCard] = useState(CREDIT_CARDS[0]);
   const [date, setDate] = useState(todayStr());
   const [note, setNote] = useState("");
   const [filter, setFilter] = useState("all");
+  const [profileFilter, setProfileFilter] = useState("all");
+  const [toast, setToast] = useState(null);
+  const [catError, setCatError] = useState(false);
+  const [budgetAlert, setBudgetAlert] = useState(null);
 
   const categories = type === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
+  const activeSubcats = type === "expense" && category ? catMeta(EXPENSE_CATEGORIES, category)?.subcategories : null;
 
-  function switchType(t) { setType(t); setCategory(t === "expense" ? EXPENSE_CATEGORIES[0].key : INCOME_CATEGORIES[0].key); }
+  function switchType(t) { setType(t); setCategory(null); setSubcategory(null); setCatError(false); }
+  function pickCategory(key) { setCategory(key); setSubcategory(null); setCatError(false); }
+  function showToast(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2200);
+  }
   function resetForm() {
-    setEditingId(null); setType("expense"); setAmount(""); setCategory(EXPENSE_CATEGORIES[0].key);
+    setEditingId(null); setType("expense"); setAmount(""); setCategory(null); setSubcategory(null); setCatError(false);
     setPayment("cash"); setCard(CREDIT_CARDS[0]); setDate(todayStr()); setNote("");
   }
   function startEdit(t) {
-    setEditingId(t.id); setType(t.type); setAmount(String(t.amount)); setCategory(t.category);
+    setEditingId(t.id); setType(t.type); setAmount(String(t.amount)); setCategory(t.category); setSubcategory(t.subcategory || null);
     setPayment(t.payment); setCard(t.card || CREDIT_CARDS[0]); setDate(t.date); setNote(t.note || "");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
   function save() {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) return;
+    if (!category) { setCatError(true); return; }
+    const wasEditing = !!editingId;
+    const ym = date.slice(0, 7);
+    const limit = type === "expense" ? budgets[category] : null;
+    if (limit) {
+      const monthCatSpend = (excludeId) => transactions
+        .filter((t) => t.type === "expense" && t.category === category && t.date.slice(0, 7) === ym && t.id !== excludeId)
+        .reduce((a, t) => a + Number(t.amount), 0);
+      const prevSpent = monthCatSpend(wasEditing ? editingId : null);
+      const newSpent = prevSpent + amt;
+      if (prevSpent < limit && newSpent >= limit) {
+        setBudgetAlert({ category, spent: newSpent, limit });
+      }
+    }
     if (editingId) {
       setTransactions((prev) => prev.map((t) => t.id === editingId
-        ? { ...t, type, amount: amt, category, date, payment, card: payment === "credit" ? card : null, note: note.trim() }
+        ? { ...t, type, amount: amt, category, subcategory: type === "expense" ? subcategory : null, date, payment, card: payment === "credit" ? card : null, note: note.trim() }
         : t));
     } else {
-      setTransactions((prev) => [{ id: uid(), type, amount: amt, category, date, payment, card: payment === "credit" ? card : null, note: note.trim() }, ...prev]);
+      setTransactions((prev) => [{ id: uid(), type, amount: amt, category, subcategory: type === "expense" ? subcategory : null, date, payment, card: payment === "credit" ? card : null, note: note.trim(), profileId: activeProfileId || null }, ...prev]);
     }
+    showToast(wasEditing ? "แก้ไขรายการสำเร็จ ✓" : "บันทึกรายการสำเร็จ ✓");
     resetForm();
   }
   function remove(id) { setTransactions((prev) => prev.filter((t) => t.id !== id)); if (editingId === id) resetForm(); }
 
   const sorted = [...transactions].sort((a, b) => (a.date < b.date ? 1 : -1));
-  const visible = filter === "all" ? sorted : sorted.filter((t) => t.type === filter);
+  const byType = filter === "all" ? sorted : sorted.filter((t) => t.type === filter);
+  const visible = profileFilter === "all" ? byType : byType.filter((t) => (t.profileId || "none") === profileFilter);
 
   return (
     <div className="flex flex-col gap-4">
+      {toast && (
+        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 200, background: C.teal, color: "#fff" }} className="px-5 py-2.5 rounded-full text-sm font-bold shadow-lg flex items-center gap-2">
+          <CheckCircle2 size={16} />{toast}
+        </div>
+      )}
+      {budgetAlert && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setBudgetAlert(null)}>
+          <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%", textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ background: C.coralSoft, width: 56, height: 56, borderRadius: 56 }} className="flex items-center justify-center mx-auto mb-3">
+              <AlertTriangle size={26} color={C.coral} />
+            </div>
+            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg mb-1.5">ใช้จ่ายเกินงบแล้ว!</p>
+            <p className="text-sm mb-4" style={{ color: C.inkSoft }}>
+              หมวด <b style={{ color: C.ink }}>{catMeta(EXPENSE_CATEGORIES, budgetAlert.category).label}</b> เดือนนี้ใช้ไป <b style={{ color: C.coral, fontFamily: "'Manrope', sans-serif" }}>{fmtTHB(budgetAlert.spent)}</b> จากงบที่ตั้งไว้ <b style={{ color: C.ink }}>{fmtTHB(budgetAlert.limit)}</b>
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => setBudgetAlert(null)} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2.5 rounded-full text-sm font-bold">รับทราบ</button>
+              {setTab && (
+                <button onClick={() => { setBudgetAlert(null); setTab("budgets"); }} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex-1 py-2.5 rounded-full text-sm font-bold">ดูงบประมาณ</button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ background: C.card, border: editingId ? `2px solid ${C.purple}` : "none" }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold">{editingId ? "แก้ไขรายการ" : "บันทึกรายการใหม่"}</p>
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">{editingId ? "แก้ไขรายการ" : "บันทึกรายการใหม่"}</p>
           {editingId && <span style={{ background: C.purpleSoft, color: C.purpleDeep }} className="text-[11px] font-bold px-2.5 py-1 rounded-full">กำลังแก้ไข</span>}
         </div>
 
@@ -800,12 +953,26 @@ function TransactionsTab({ transactions, setTransactions }) {
             {categories.map((c) => {
               const Icon = c.icon; const active = category === c.key; const color = CAT_COLOR[c.key];
               return (
-                <button key={c.key} onClick={() => setCategory(c.key)} style={{ background: active ? color : CAT_SOFT[c.key], color: active ? "#fff" : color }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-bold">
+                <button key={c.key} onClick={() => pickCategory(c.key)} style={{ background: active ? color : C.graySoft, color: active ? "#fff" : C.inkSoft }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-bold">
                   <Icon size={13} />{c.label}
                 </button>
               );
             })}
           </div>
+          {catError && <p className="text-xs font-semibold mt-1.5" style={{ color: C.coral }}>กรุณาเลือกหมวดหมู่ก่อนบันทึก</p>}
+          {activeSubcats && activeSubcats.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-2.5">
+              <button onClick={() => setSubcategory(null)} style={{ background: !subcategory ? C.ink : C.graySoft, color: !subcategory ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-xs font-bold">ทั่วไป</button>
+              {activeSubcats.map((s) => {
+                const SIcon = s.icon; const activeSub = subcategory === s.key; const scolor = CAT_COLOR[s.key];
+                return (
+                  <button key={s.key} onClick={() => setSubcategory(s.key)} style={{ background: activeSub ? scolor : C.graySoft, color: activeSub ? "#fff" : C.inkSoft }} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold">
+                    <SIcon size={11} />{s.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </Field>
 
         <div className="h-3" />
@@ -836,32 +1003,49 @@ function TransactionsTab({ transactions, setTransactions }) {
       </div>
 
       <div>
-        <div className="flex items-center justify-between mb-2.5">
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold">รายการทั้งหมด</p>
+        <div className="flex items-center justify-between mb-2.5 flex-wrap gap-2">
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">รายการทั้งหมด</p>
           <div className="flex rounded-full overflow-hidden p-1" style={{ background: C.graySoft }}>
             {[["all", "ทั้งหมด"], ["income", "รายรับ"], ["expense", "รายจ่าย"]].map(([k, l]) => (
               <button key={k} onClick={() => setFilter(k)} style={{ background: filter === k ? C.card : "transparent" }} className="px-3 py-1 text-xs font-bold rounded-full">{l}</button>
             ))}
           </div>
         </div>
+        {profiles.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2.5">
+            <button onClick={() => setProfileFilter("all")} style={{ background: profileFilter === "all" ? C.purple : C.graySoft, color: profileFilter === "all" ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold">ทุกคน</button>
+            {profiles.map((p) => (
+              <button key={p.id} onClick={() => setProfileFilter(p.id)} style={{ background: profileFilter === p.id ? p.color : C.graySoft, color: profileFilter === p.id ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold flex items-center gap-1">
+                <span style={{ background: profileFilter === p.id ? "rgba(255,255,255,0.4)" : p.color, width: 12, height: 12, borderRadius: 12 }} />{p.name}
+              </button>
+            ))}
+          </div>
+        )}
         {visible.length === 0 ? <EmptyNote text="ยังไม่มีรายการ — เริ่มบันทึกรายการแรกของคุณด้านบน" /> : (
           <div className="flex flex-col gap-2">
             {visible.map((t) => {
               const meta = catMeta(t.type === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES, t.category);
-              const Icon = meta.icon; const color = CAT_COLOR[t.category];
+              const subMeta = t.subcategory ? subcategoryMeta(t.category, t.subcategory) : null;
+              const Icon = subMeta ? subMeta.icon : meta.icon; const color = CAT_COLOR[subMeta ? subMeta.key : t.category];
+              const loggedBy = t.profileId ? profileById(profiles, t.profileId) : null;
               return (
                 <div key={t.id} style={{ background: C.card, border: editingId === t.id ? `2px solid ${C.purple}` : "none" }} className="flex items-center gap-3 px-3.5 py-3 rounded-2xl shadow-sm">
-                  <div style={{ background: color }} className="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0">
+                  <div style={{ background: color }} className="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 relative">
                     <Icon size={16} color="#fff" />
+                    {loggedBy && (
+                      <span title={loggedBy.name} style={{ background: loggedBy.color, width: 14, height: 14, borderRadius: 14, border: `2px solid ${C.card}`, position: "absolute", bottom: -3, right: -3, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <span style={{ fontSize: 8, color: "#fff", fontFamily: "'Manrope', sans-serif" }} className="font-bold">{loggedBy.name.trim()[0]?.toUpperCase()}</span>
+                      </span>
+                    )}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold truncate">{meta.label}{t.note ? ` · ${t.note}` : ""}</p>
+                    <p className="text-sm font-bold truncate">{meta.label}{subMeta ? ` · ${subMeta.label}` : ""}{t.note ? ` · ${t.note}` : ""}</p>
                     <p className="text-xs flex items-center gap-1.5 flex-wrap" style={{ color: C.inkSoft }}>
                       <span>{thDate(t.date)}</span><span>·</span>
                       <span>{t.payment === "cash" ? "เงินสด" : t.payment === "transfer" ? "โอนเงิน" : `บัตร (${t.card})`}</span>
                     </p>
                   </div>
-                  <p style={{ fontFamily: "'Baloo 2', sans-serif", color: t.type === "expense" ? C.coral : C.teal }} className="text-sm font-bold whitespace-nowrap">
+                  <p style={{ fontFamily: "'Manrope', sans-serif", color: t.type === "expense" ? C.coral : C.teal }} className="text-sm font-bold whitespace-nowrap">
                     {t.type === "expense" ? "-" : "+"}{fmtTHB(t.amount)}
                   </p>
                   <button onClick={() => startEdit(t)} style={{ color: C.purple }} className="p-1"><Pencil size={14} /></button>
@@ -882,7 +1066,7 @@ function Field({ label, children }) {
 
 const inputStyle = {
   background: C.bg, border: `1px solid ${C.graySoft}`, borderRadius: 12,
-  padding: "8px 12px", fontSize: 14, color: C.ink, width: "100%", fontFamily: "'Nunito', sans-serif", fontWeight: 700,
+  padding: "8px 12px", fontSize: 14, color: C.ink, width: "100%", fontFamily: "'Inter', sans-serif", fontWeight: 700,
 };
 
 /* ---------------------------------------------------------------- */
@@ -911,12 +1095,12 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
         <div style={{ background: `linear-gradient(135deg, ${C.teal}, #22A184)` }} className="rounded-2xl p-4 text-white shadow-sm">
           <PiggyBank size={20} className="mb-2" />
           <p className="text-xs font-semibold opacity-90">เงินออมสะสม</p>
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalSaving)}</p>
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalSaving)}</p>
         </div>
         <div style={{ background: `linear-gradient(135deg, ${C.blue}, #2E93C4)` }} className="rounded-2xl p-4 text-white shadow-sm">
           <TrendingUp size={20} className="mb-2" />
           <p className="text-xs font-semibold opacity-90">เงินลงทุนสะสม</p>
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalInvest)}</p>
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalInvest)}</p>
         </div>
       </div>
 
@@ -929,7 +1113,7 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
       {subTab === "log" && (
       <>
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">เพิ่มรายการออม / ลงทุน</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">เพิ่มรายการออม / ลงทุน</p>
         <div className="flex rounded-full overflow-hidden p-1 mb-3.5 w-fit" style={{ background: C.graySoft }}>
           <button onClick={() => setKind("saving")} style={{ background: kind === "saving" ? C.teal : "transparent", color: kind === "saving" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><PiggyBank size={14} />เงินออม</button>
           <button onClick={() => setKind("investment")} style={{ background: kind === "investment" ? C.blue : "transparent", color: kind === "investment" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><TrendingUp size={14} />เงินลงทุน</button>
@@ -944,7 +1128,7 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
       </div>
 
       <div>
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-2.5">รายการทั้งหมด</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-2.5">รายการทั้งหมด</p>
         {savings.length === 0 ? <EmptyNote text="ยังไม่มีรายการออมหรือลงทุน" /> : (
           <div className="flex flex-col gap-2">
             {savings.map((s) => {
@@ -960,7 +1144,7 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
                       <p className="text-sm font-bold truncate">{s.name}</p>
                       <p className="text-xs" style={{ color: C.inkSoft }}>{thDate(s.date)}</p>
                     </div>
-                    <p style={{ fontFamily: "'Baloo 2', sans-serif", color }} className="text-sm font-bold">{fmtTHB(s.amount)}</p>
+                    <p style={{ fontFamily: "'Manrope', sans-serif", color }} className="text-sm font-bold">{fmtTHB(s.amount)}</p>
                     <button onClick={() => remove(s.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={14} /></button>
                   </div>
                   {pct !== null && (
@@ -1025,7 +1209,7 @@ function DebtsTab({ debts, setDebts }) {
   return (
     <div className="flex flex-col gap-4">
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">เพิ่มรายการหนี้สิน / กำหนดชำระ</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">เพิ่มรายการหนี้สิน / กำหนดชำระ</p>
         <div className="flex rounded-full overflow-hidden p-1 mb-3.5 w-fit" style={{ background: C.graySoft }}>
           <button onClick={() => setDebtType("other")} style={{ background: debtType === "other" ? C.purple : "transparent", color: debtType === "other" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">หนี้ทั่วไป</button>
           <button onClick={() => setDebtType("credit")} style={{ background: debtType === "credit" ? C.purple : "transparent", color: debtType === "credit" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><CreditCard size={14} />บัตรเครดิต</button>
@@ -1051,7 +1235,7 @@ function DebtsTab({ debts, setDebts }) {
       </div>
 
       <div>
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-2.5">รายการหนี้สินทั้งหมด</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-2.5">รายการหนี้สินทั้งหมด</p>
         {sorted.length === 0 ? <EmptyNote text="ยังไม่มีรายการหนี้สินหรือกำหนดชำระ" /> : (
           <div className="flex flex-col gap-2">
             {sorted.map((d) => {
@@ -1071,7 +1255,7 @@ function DebtsTab({ debts, setDebts }) {
                     <p className="text-xs" style={{ color: C.inkSoft }}>ครบกำหนด {thDate(d.dueDate)}</p>
                   </div>
                   <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-bold whitespace-nowrap px-2.5 py-1 rounded-full">{statusText}</span>
-                  <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-sm font-bold whitespace-nowrap">{fmtTHB(d.amount)}</p>
+                  <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-sm font-bold whitespace-nowrap">{fmtTHB(d.amount)}</p>
                   <button onClick={() => remove(d.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={14} /></button>
                 </div>
               );
@@ -1189,13 +1373,13 @@ function MonthlyPlanTab({
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <button onClick={() => shiftMonth(-1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronLeft size={16} /></button>
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold text-lg">{monthLabel(ym)}</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">{monthLabel(ym)}</p>
         <button onClick={() => shiftMonth(1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronRight size={16} /></button>
       </div>
 
       <div style={{ background: `linear-gradient(135deg, ${C.pink}, #D6478E)` }} className="rounded-3xl p-5 text-white shadow-sm">
         <p className="text-xs font-semibold opacity-90 mb-1">คงเหลือใช้ได้ตอนนี้ (หลังหักรายจ่ายที่บันทึกจริง)</p>
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(remainingNow)}</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(remainingNow)}</p>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <SummaryMini label="รายรับตามแผน" value={totalIncome} />
           <SummaryMini label="Fix cost" value={totalFixCost} sub={`${fixPct}% ของรายรับ`} />
@@ -1239,8 +1423,8 @@ function MonthlyPlanTab({
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold flex items-center gap-2"><Bell size={16} color={C.yellowDeep} />หนี้ที่ต้องชำระเดือนนี้</p>
-          <span style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-sm font-bold">{fmtTHB(totalDebt)}</span>
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold flex items-center gap-2"><Bell size={16} color={C.yellowDeep} />หนี้ที่ต้องชำระเดือนนี้</p>
+          <span style={{ fontFamily: "'Manrope', sans-serif" }} className="text-sm font-bold">{fmtTHB(totalDebt)}</span>
         </div>
         {debtsThisMonth.length === 0 ? <EmptyNote text="ไม่มีรายการหนี้ครบกำหนดเดือนนี้" /> : (
           <div className="flex flex-col gap-2">
@@ -1248,7 +1432,7 @@ function MonthlyPlanTab({
               <div key={d.id} className="flex items-center gap-2.5 text-sm">
                 <span style={{ background: d.paid ? C.teal : C.coral }} className="w-2 h-2 rounded-full shrink-0" />
                 <span className="flex-1 font-semibold truncate">{d.name}{d.auto ? " · อัตโนมัติจากบัตรเครดิต" : ""}</span>
-                <span style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold">{fmtTHB(d.amount)}</span>
+                <span style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">{fmtTHB(d.amount)}</span>
               </div>
             ))}
           </div>
@@ -1257,7 +1441,7 @@ function MonthlyPlanTab({
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">เป้าหมายออม & ลงทุนต่อเดือน</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">เป้าหมายออม & ลงทุนต่อเดือน</p>
         <div className="flex flex-col gap-3">
           <AllocationRow label="เงินออม" color={C.teal} icon={PiggyBank} alloc={savingsPlan.saving}
             onChange={(alloc) => setSavingsPlan((p) => ({ ...p, saving: alloc }))} amount={savingAmt} />
@@ -1271,7 +1455,7 @@ function MonthlyPlanTab({
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <button onClick={() => setShowSettings((s) => !s)} className="w-full flex items-center justify-between">
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold flex items-center gap-2"><Settings size={16} />ตั้งค่าวันตัดรอบ/ครบกำหนดบัตรเครดิต</p>
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold flex items-center gap-2"><Settings size={16} />ตั้งค่าวันตัดรอบ/ครบกำหนดบัตรเครดิต</p>
           {showSettings ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </button>
         {showSettings && (
@@ -1308,7 +1492,7 @@ function SummaryMini({ label, value, sub, isText }) {
   return (
     <div style={{ background: "rgba(255,255,255,0.18)" }} className="rounded-xl px-3 py-2">
       <p className="opacity-90 font-semibold">{label}</p>
-      <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold text-sm">{isText ? value : fmtTHB(value)}</p>
+      <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-sm">{isText ? value : fmtTHB(value)}</p>
       {sub && <p className="opacity-80 text-[10px]">{sub}</p>}
     </div>
   );
@@ -1320,7 +1504,7 @@ function AllocationRow({ label, color, icon: Icon, alloc, onChange, amount }) {
       <div className="flex items-center gap-2 mb-2">
         <div style={{ background: color }} className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"><Icon size={15} color="#fff" /></div>
         <p className="text-sm font-bold flex-1">{label}</p>
-        <p style={{ fontFamily: "'Baloo 2', sans-serif", color }} className="text-sm font-bold">{fmtTHB(amount)}</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif", color }} className="text-sm font-bold">{fmtTHB(amount)}</p>
       </div>
       <div className="flex items-center gap-2">
         <div className="flex rounded-full overflow-hidden p-0.5" style={{ background: C.graySoft }}>
@@ -1375,8 +1559,8 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
   return (
     <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
       <div className="flex items-center justify-between mb-3">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold flex items-center gap-2"><Icon size={16} color={color} />{title}</p>
-        <span style={{ fontFamily: "'Baloo 2', sans-serif", color }} className="text-sm font-bold">{fmtTHB(total)}</span>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold flex items-center gap-2"><Icon size={16} color={color} />{title}</p>
+        <span style={{ fontFamily: "'Manrope', sans-serif", color }} className="text-sm font-bold">{fmtTHB(total)}</span>
       </div>
       {extraNote && <p className="text-xs font-semibold mb-3" style={{ color }}>{extraNote}</p>}
 
@@ -1552,7 +1736,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
       <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-5 text-white shadow-sm">
         <p className="text-xs font-semibold opacity-90 mb-1">ยอดเงินลงทุนทั้งหมด</p>
         <input type="number" min="0" value={totalPool || ""} onChange={(e) => setTotalPool(e.target.value)} placeholder="0.00"
-          style={{ background: "rgba(255,255,255,0.18)", border: "none", borderRadius: 12, padding: "8px 12px", color: "#fff", fontFamily: "'Baloo 2', sans-serif", fontWeight: 700, fontSize: 22, width: "100%" }} />
+          style={{ background: "rgba(255,255,255,0.18)", border: "none", borderRadius: 12, padding: "8px 12px", color: "#fff", fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 22, width: "100%" }} />
         <div className="grid grid-cols-2 gap-2 text-xs mt-3">
           <SummaryMini label="จัดสรรแล้ว" value={totalAllocated} />
           <SummaryMini label={remaining < 0 ? "เกินงบที่ตั้งไว้" : "ยังไม่ได้จัดสรร"} value={Math.abs(remaining)} />
@@ -1569,7 +1753,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
       <>
       {pieData.length > 0 && (
         <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">สัดส่วนพอร์ตการลงทุน</p>
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">สัดส่วนพอร์ตการลงทุน</p>
           <div className="flex flex-col sm:flex-row items-center gap-4">
             <div style={{ width: "100%", maxWidth: 200, height: 190 }}>
               <ResponsiveContainer>
@@ -1585,7 +1769,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
               {pieData.map((e, i) => (
                 <div key={i} className="flex items-center justify-between text-sm">
                   <span className="flex items-center gap-2 font-semibold"><span style={{ width: 10, height: 10, borderRadius: 10, background: e.color }} />{e.name}</span>
-                  <span style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold">{fmtTHB(e.value)}</span>
+                  <span style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">{fmtTHB(e.value)}</span>
                 </div>
               ))}
             </div>
@@ -1594,7 +1778,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
       )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">รายการลงทุน</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">รายการลงทุน</p>
         {items.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุน — เพิ่มรายการแรกด้านล่าง" /> : (
           <div className="flex flex-col gap-2 mb-1">
             {items.map((item) => {
@@ -1639,7 +1823,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
                     </div>
                     <input type="number" min="0" defaultValue={item.value} key={item.id + item.mode}
                       onBlur={(e) => updateItem(item.id, { value: parseFloat(e.target.value) || 0 })} style={{ ...inputStyle, width: 90 }} />
-                    <span style={{ fontFamily: "'Baloo 2', sans-serif", color: C.purple }} className="text-sm font-bold flex-1 text-right">{fmtTHB(amt)}</span>
+                    <span style={{ fontFamily: "'Manrope', sans-serif", color: C.purple }} className="text-sm font-bold flex-1 text-right">{fmtTHB(amt)}</span>
                     <button onClick={() => markExecuted(item)} title="ทำเครื่องหมายว่าลงทุนแล้ว" style={{ color: item.executed ? C.teal : C.graySoft }}><CheckCircle2 size={20} /></button>
                     <button onClick={() => removeItem(item.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={13} /></button>
                   </div>
@@ -1667,7 +1851,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">เพิ่มรายการลงทุนใหม่</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">เพิ่มรายการลงทุนใหม่</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
           <Field label="ชื่อรายการลงทุน"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น กองทุน SET50" style={inputStyle} /></Field>
           <Field label="หมวดหมู่">
@@ -1778,17 +1962,17 @@ function InvestMonthlyPlanner({ investPlan, setInvestPlan }) {
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <button onClick={() => setYm((p) => addMonths(p, -1))} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronLeft size={16} /></button>
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold text-lg">{monthLabel(ym)}</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">{monthLabel(ym)}</p>
         <button onClick={() => setYm((p) => addMonths(p, 1))} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronRight size={16} /></button>
       </div>
 
       <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-5 text-white shadow-sm">
         <p className="text-xs font-semibold opacity-90 mb-1">แผนลงทุนรวมเดือนนี้</p>
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(monthTotal)}</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(monthTotal)}</p>
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">กำหนดยอดแต่ละรายการสำหรับเดือนนี้</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">กำหนดยอดแต่ละรายการสำหรับเดือนนี้</p>
         {rows.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุน — ไปเพิ่มที่แท็บ 'รายการ' ก่อน" /> : (
           <div className="flex flex-col gap-2">
             {rows.map(({ item, amt, overridden }) => (
@@ -1851,15 +2035,15 @@ function InvestSummary({ savings }) {
         <>
           <div className="flex items-center justify-between">
             <button onClick={() => setYear((y) => y - 1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronLeft size={16} /></button>
-            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold text-lg">ปี {year + 543}</p>
+            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">ปี {year + 543}</p>
             <button onClick={() => setYear((y) => y + 1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronRight size={16} /></button>
           </div>
           <div style={{ background: `linear-gradient(135deg, ${C.teal}, #22A184)` }} className="rounded-3xl p-5 text-white shadow-sm">
             <p className="text-xs font-semibold opacity-90 mb-1">รวมเงินลงทุนจริงปีนี้</p>
-            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(yearTotal)}</p>
+            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(yearTotal)}</p>
           </div>
           <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแต่ละเดือน</p>
+            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแต่ละเดือน</p>
             {yearTotal === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุนจริงในปีนี้" /> : (
               <div style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
@@ -1879,10 +2063,10 @@ function InvestSummary({ savings }) {
         <>
           <div style={{ background: `linear-gradient(135deg, ${C.blue}, #2E93C4)` }} className="rounded-3xl p-5 text-white shadow-sm">
             <p className="text-xs font-semibold opacity-90 mb-1">รวมเงินลงทุนจริงทั้งหมด</p>
-            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(allTimeTotal)}</p>
+            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(allTimeTotal)}</p>
           </div>
           <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแยกตามปี</p>
+            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแยกตามปี</p>
             {yearlyData.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุนจริง" /> : (
               <div style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
@@ -1940,13 +2124,13 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
     <div className="flex flex-col gap-4">
       <div style={{ background: `linear-gradient(135deg, ${gainColor}, ${totalGain >= 0 ? "#22A184" : "#D6472C"})` }} className="rounded-3xl p-5 text-white shadow-sm">
         <p className="text-xs font-semibold opacity-90 mb-1">มูลค่าปัจจุบันของพอร์ต</p>
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(totalCurrent)}</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(totalCurrent)}</p>
         <div className="grid grid-cols-3 gap-2 text-xs">
           <SummaryMini label="เงินลงทุนทั้งหมด" value={totalInvested} />
           <SummaryMini label="กำไร/ขาดทุน" value={totalGain} />
           <div style={{ background: "rgba(255,255,255,0.18)" }} className="rounded-xl px-3 py-2">
             <p className="opacity-90 font-semibold">ผลตอบแทน</p>
-            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold text-sm flex items-center gap-1">
+            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-sm flex items-center gap-1">
               {totalGain >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}{totalGainPct >= 0 ? "+" : ""}{totalGainPct.toFixed(1)}%
             </p>
           </div>
@@ -1955,7 +2139,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
 
       {pieData.length > 0 && (
         <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">สัดส่วนมูลค่าปัจจุบันตามรายการ</p>
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">สัดส่วนมูลค่าปัจจุบันตามรายการ</p>
           <div className="flex flex-col sm:flex-row items-center gap-4">
             <div style={{ width: "100%", maxWidth: 200, height: 190 }}>
               <ResponsiveContainer>
@@ -1971,7 +2155,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
               {pieData.map((e, i) => (
                 <div key={i} className="flex items-center justify-between text-sm">
                   <span className="flex items-center gap-2 font-semibold"><span style={{ width: 10, height: 10, borderRadius: 10, background: e.color }} />{e.name}</span>
-                  <span style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold">{fmtTHB(e.value)}</span>
+                  <span style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">{fmtTHB(e.value)}</span>
                 </div>
               ))}
             </div>
@@ -1980,7 +2164,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
       )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">รายการที่ลงทุนอยู่ตอนนี้</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">รายการที่ลงทุนอยู่ตอนนี้</p>
         {holdings.length === 0 ? <EmptyNote text="ยังไม่มีรายการ — เพิ่มรายการลงทุนที่มีอยู่แล้วด้านล่าง" /> : (
           <div className="flex flex-col gap-2">
             {holdings.map((h) => {
@@ -2001,7 +2185,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
                     </span>
                   </div>
                   <div className="flex items-center gap-3 ml-11 text-xs" style={{ color: C.inkSoft }}>
-                    <span>ลงทุน: <b style={{ color: C.ink, fontFamily: "'Baloo 2', sans-serif" }}>{fmtTHB(h.invested)}</b></span>
+                    <span>ลงทุน: <b style={{ color: C.ink, fontFamily: "'Manrope', sans-serif" }}>{fmtTHB(h.invested)}</b></span>
                     <span className="flex items-center gap-1">มูลค่าปัจจุบัน:
                       <input type="number" min="0" defaultValue={h.current} key={h.id + h.current}
                         onBlur={(e) => updateCurrent(h.id, e.target.value)} style={{ ...inputStyle, width: 90, padding: "4px 8px" }} />
@@ -2017,7 +2201,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">เพิ่มรายการลงทุนที่มีอยู่แล้ว</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">เพิ่มรายการลงทุนที่มีอยู่แล้ว</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
           <Field label="ชื่อรายการ"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น หุ้น PTT" style={inputStyle} /></Field>
           <Field label="หมวดหมู่">
@@ -2126,7 +2310,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
     return (
       <div className="flex flex-col gap-4">
         <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3 flex items-center gap-2"><Home size={16} color={C.brown} />ตั้งค่าเงินกู้บ้าน</p>
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3 flex items-center gap-2"><Home size={16} color={C.brown} />ตั้งค่าเงินกู้บ้าน</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
             <Field label="ชื่อรายการ"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น สินเชื่อบ้าน ธ.กรุงศรี" style={inputStyle} /></Field>
             <Field label="เงินต้นเริ่มต้น (บาท)"><input type="number" min="0" value={principal} onChange={(e) => setPrincipal(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
@@ -2152,7 +2336,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold text-lg flex items-center gap-2"><Home size={18} color={C.brown} />{homeLoan.name}</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg flex items-center gap-2"><Home size={18} color={C.brown} />{homeLoan.name}</p>
         <div className="flex items-center gap-2">
           <button onClick={() => setEditing(true)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><Settings size={14} /></button>
           <button onClick={resetLoan} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><Trash2 size={14} color={C.coral} /></button>
@@ -2170,12 +2354,12 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
 
       <div style={{ background: `linear-gradient(135deg, ${C.brown}, #A85F2C)` }} className="rounded-3xl p-5 text-white shadow-sm">
         <p className="text-xs font-semibold opacity-90 mb-1">{paidOff ? "ผ่อนหมดแล้ว 🎉" : "เงินต้นคงเหลือตอนนี้"}</p>
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(currentRemaining)}</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(currentRemaining)}</p>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <SummaryMini label="งวดที่เหลือ" value={remainingInstallments} sub="งวด" isText />
           <div style={{ background: "rgba(255,255,255,0.18)" }} className="rounded-xl px-3 py-2">
             <p className="opacity-90 font-semibold">คาดว่าจะปิดยอด</p>
-            <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold text-sm">{payoffYm ? monthLabel(payoffYm) : "-"}</p>
+            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-sm">{payoffYm ? monthLabel(payoffYm) : "-"}</p>
           </div>
           <SummaryMini label="ดอกเบี้ยจ่ายไปแล้ว (ประมาณ)" value={interestPaidSoFar} />
           <SummaryMini label="ดอกเบี้ยที่เหลือ (ประมาณ)" value={interestRemaining} />
@@ -2190,7 +2374,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
       )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold mb-3">อัตราดอกเบี้ย</p>
+        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">อัตราดอกเบี้ย</p>
         <div className="flex items-center gap-2 mb-3">
           <div style={{ background: C.brownSoft }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><Percent size={15} color={C.brown} /></div>
           <p className="text-sm font-bold">ปัจจุบัน {currentRate}% ต่อปี</p>
@@ -2200,7 +2384,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
             {[...homeLoan.rateChanges].sort((a, b) => a.ym.localeCompare(b.ym)).map((rc, i) => (
               <div key={i} className="flex items-center gap-2 text-xs" style={{ color: C.inkSoft }}>
                 <span className="flex-1">ตั้งแต่ {monthLabel(rc.ym)}</span>
-                <span style={{ fontFamily: "'Baloo 2', sans-serif", color: C.ink }} className="font-bold">{rc.rate}%</span>
+                <span style={{ fontFamily: "'Manrope', sans-serif", color: C.ink }} className="font-bold">{rc.rate}%</span>
                 <button onClick={() => removeRateChange(homeLoan.rateChanges.indexOf(rc))} style={{ color: C.gray }} className="p-1"><Trash2 size={12} /></button>
               </div>
             ))}
@@ -2221,10 +2405,10 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <p style={{ fontFamily: "'Baloo 2', sans-serif" }} className="font-bold">ตารางผ่อนชำระ</p>
+          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">ตารางผ่อนชำระ</p>
           <div className="flex items-center gap-2">
             <button onClick={() => setViewYear((y) => y - 1)} style={{ background: C.graySoft, color: C.inkSoft }} className="p-1.5 rounded-full"><ChevronLeft size={14} /></button>
-            <span style={{ fontFamily: "'Baloo 2', sans-serif" }} className="text-sm font-bold whitespace-nowrap">ปี {viewYear + 543}</span>
+            <span style={{ fontFamily: "'Manrope', sans-serif" }} className="text-sm font-bold whitespace-nowrap">ปี {viewYear + 543}</span>
             <button onClick={() => setViewYear((y) => y + 1)} style={{ background: C.graySoft, color: C.inkSoft }} className="p-1.5 rounded-full"><ChevronRight size={14} /></button>
             <button onClick={() => setViewYear(new Date().getFullYear())} style={{ background: C.brownSoft, color: C.brown }} className="px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap">ปีนี้</button>
           </div>
@@ -2258,7 +2442,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
                       <td className="text-right px-2 whitespace-nowrap">
                         <input type="number" min="0" defaultValue={r.payment} key={r.ym + "-pay-" + r.payment}
                           onBlur={(e) => updateActualPayment(r.ym, e.target.value)}
-                          style={{ ...inputStyle, width: 90, padding: "4px 8px", fontFamily: "'Baloo 2', sans-serif", textAlign: "right" }} />
+                          style={{ ...inputStyle, width: 90, padding: "4px 8px", fontFamily: "'Manrope', sans-serif", textAlign: "right" }} />
                       </td>
                       <td className="text-right px-2 whitespace-nowrap">{r.rate}%</td>
                       <td className="text-right px-2 whitespace-nowrap" style={{ color: C.coral }}>{fmtTHB(r.interest)}</td>
