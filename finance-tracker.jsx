@@ -259,43 +259,63 @@ export default function FinanceTracker() {
   const [ready, setReady] = useState(false);
   const loadedRef = useRef(false);
 
+  async function loadData() {
+    try {
+      const res = await window.storage.get(STORAGE_KEY);
+      if (res && res.value) {
+        const data = JSON.parse(res.value);
+        setTransactions(data.transactions || []);
+        setSavings(data.savings || []);
+        setDebts(data.debts || []);
+        setBudgets(data.budgets || {});
+        setPlanIncomeItems(data.planIncomeItems || []);
+        setPlanFixCostItems(data.planFixCostItems || []);
+        setPlanOverrides(data.planOverrides || {});
+        if (data.savingsPlan) setSavingsPlan(data.savingsPlan);
+        if (data.cardSettings) {
+          setCardSettings((prev) => ({ ...prev, ...data.cardSettings }));
+        } else if (data.cardDueDay) {
+          // migrate legacy format: plain number -> { cutoffDay, dueDay }
+          setCardSettings((prev) => {
+            const next = { ...prev };
+            Object.entries(data.cardDueDay).forEach(([card, val]) => {
+              next[card] = typeof val === "number" ? { cutoffDay: 25, dueDay: val } : val;
+            });
+            return next;
+          });
+        }
+        if (data.investPlan) setInvestPlan((p) => ({ ...p, ...data.investPlan, overrides: data.investPlan.overrides || {} }));
+        setHoldings(data.holdings || []);
+        if (data.homeLoan) setHomeLoan((prev) => ({ ...prev, ...data.homeLoan }));
+        if (data.dismissedAlerts) setDismissedAlerts(data.dismissedAlerts);
+        setProfiles(data.profiles || []);
+        if (data.expenseCategories) setExpenseCategories(data.expenseCategories);
+        if (data.creditCards) setCreditCards(data.creditCards.map((c) => typeof c === "string" ? { name: c, icon: "CreditCard", color: "#6C5CE7" } : c));
+      }
+    } catch (e) { /* fresh start / offline */ }
+  }
+
   useEffect(() => {
     (async () => {
-      try {
-        const res = await window.storage.get(STORAGE_KEY);
-        if (res && res.value) {
-          const data = JSON.parse(res.value);
-          setTransactions(data.transactions || []);
-          setSavings(data.savings || []);
-          setDebts(data.debts || []);
-          setBudgets(data.budgets || {});
-          setPlanIncomeItems(data.planIncomeItems || []);
-          setPlanFixCostItems(data.planFixCostItems || []);
-          setPlanOverrides(data.planOverrides || {});
-          if (data.savingsPlan) setSavingsPlan(data.savingsPlan);
-          if (data.cardSettings) {
-            setCardSettings((prev) => ({ ...prev, ...data.cardSettings }));
-          } else if (data.cardDueDay) {
-            // migrate legacy format: plain number -> { cutoffDay, dueDay }
-            setCardSettings((prev) => {
-              const next = { ...prev };
-              Object.entries(data.cardDueDay).forEach(([card, val]) => {
-                next[card] = typeof val === "number" ? { cutoffDay: 25, dueDay: val } : val;
-              });
-              return next;
-            });
-          }
-          if (data.investPlan) setInvestPlan((p) => ({ ...p, ...data.investPlan, overrides: data.investPlan.overrides || {} }));
-          setHoldings(data.holdings || []);
-          if (data.homeLoan) setHomeLoan((prev) => ({ ...prev, ...data.homeLoan }));
-          if (data.dismissedAlerts) setDismissedAlerts(data.dismissedAlerts);
-          setProfiles(data.profiles || []);
-          if (data.expenseCategories) setExpenseCategories(data.expenseCategories);
-          if (data.creditCards) setCreditCards(data.creditCards.map((c) => typeof c === "string" ? { name: c, icon: "CreditCard", color: "#6C5CE7" } : c));
-        }
-      } catch (e) { /* fresh start */ }
-      finally { loadedRef.current = true; setReady(true); }
+      await loadData();
+      loadedRef.current = true;
+      setReady(true);
     })();
+  }, []);
+
+  // The app only ever loaded data once on page mount, so a tab left open on
+  // one device never saw changes made on another device until manually
+  // reloaded. Re-pull the latest data whenever this tab/window regains
+  // focus or becomes visible again, so switching between devices "just syncs".
+  useEffect(() => {
+    function onFocus() { if (loadedRef.current) loadData(); }
+    function onVisible() { if (document.visibilityState === "visible" && loadedRef.current) loadData(); }
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   useEffect(() => {
