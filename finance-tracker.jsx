@@ -863,16 +863,16 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
 
       <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-5 shadow-sm text-white relative overflow-hidden">
         <div className="flex items-center justify-between mb-1">
-          <p className="text-xs font-semibold" style={{ color: "rgba(255,255,255,0.75)" }}>คงเหลือ{period === "day" ? "วันนี้" : period === "month" ? "เดือนนี้" : "ปีนี้"}</p>
-          <span style={{ background: "rgba(255,255,255,0.18)" }} className="text-[11px] font-bold px-2.5 py-1 rounded-full">{range.label}</span>
+          <p className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>คงเหลือ{period === "day" ? "วันนี้" : period === "month" ? "เดือนนี้" : "ปีนี้"}</p>
+          <span style={{ background: "rgba(255,255,255,0.18)" }} className="text-[11px] px-2.5 py-1 rounded-full">{range.label}</span>
         </div>
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold mb-4">{fmtTHB(income - expense)}</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif", color: (income - expense) < 0 ? "#FF5C5C" : "#fff" }} className="text-3xl mb-4">{fmtTHB(income - expense)}</p>
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.22)" }} className="flex items-center pt-3 gap-4">
           <div className="flex-1 flex items-center gap-2">
             <div style={{ background: "rgba(255,255,255,0.18)" }} className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"><TrendingUp size={15} /></div>
             <div>
               <p className="text-[11px]" style={{ color: "rgba(255,255,255,0.75)" }}>รายรับ</p>
-              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold">{fmtTHB(income)}</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm">{fmtTHB(income)}</p>
             </div>
           </div>
           <div style={{ background: "rgba(255,255,255,0.22)", width: 1, alignSelf: "stretch" }} />
@@ -880,57 +880,23 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
             <div style={{ background: "rgba(255,255,255,0.18)" }} className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"><TrendingDown size={15} /></div>
             <div>
               <p className="text-[11px]" style={{ color: "rgba(255,255,255,0.75)" }}>รายจ่าย</p>
-              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold">{fmtTHB(expense)}</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm">{fmtTHB(expense)}</p>
             </div>
           </div>
         </div>
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center justify-between mb-3">
           <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">สัดส่วนรายจ่ายตามหมวดหมู่</p>
           {byCatTotal > 0 && <span className="text-xs font-bold" style={{ color: C.inkSoft }}>เฉลี่ยรวม {fmtTHB(byCatTotal / daysInPeriod)}/วัน</span>}
         </div>
-        {byCat.length > 0 && <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>คำนวณจาก {daysInPeriod} วันในช่วงนี้ · รวมทุกช่องทางชำระเงิน (เงินสด/โอน/บัตรเครดิต) · ยอดของหมวดหมู่หลักรวมหมวดหมู่ย่อยทั้งหมดไว้แล้ว</p>}
-        {byCat.length > 0 && (() => {
-          const top = byCat[0];
-          const TopIcon = resolveIcon(top.icon);
-          const pct = byCatTotal > 0 ? Math.round((top.value / byCatTotal) * 100) : 0;
-          return (
-            <div style={{ background: C.bg }} className="flex items-center gap-3 rounded-2xl px-3.5 py-3 mb-4">
-              <div style={{ background: top.color }} className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"><TopIcon size={17} color="#fff" /></div>
-              <p className="text-xs leading-snug">
-                หมวด <b style={{ color: C.ink }}>{top.name}</b> ใช้จ่ายไป <b style={{ color: C.ink, fontFamily: "'Prompt', sans-serif" }}>{fmtTHB(top.value)}</b> คิดเป็น <b style={{ color: top.color }}>{pct}%</b> ของรายจ่ายทั้งหมดในช่วงนี้
-              </p>
-            </div>
-          );
-        })()}
         {byCat.length === 0 ? <EmptyNote text="ยังไม่มีรายจ่ายในช่วงนี้" /> : (
           <div className="flex flex-col items-center gap-5">
             <div style={{ width: "100%", maxWidth: 260, height: 260, position: "relative" }}>
               <ResponsiveContainer>
                 <PieChart>
-                  <Pie data={byCat} dataKey="value" nameKey="name" innerRadius={72} outerRadius={104} paddingAngle={3} cornerRadius={8}
-                    label={(props) => {
-                      const { cx, cy, midAngle, outerRadius: r, index } = props;
-                      const RADIAN = Math.PI / 180;
-                      const radius = r + 18;
-                      const x = cx + radius * Math.cos(-midAngle * RADIAN);
-                      const y = cy + radius * Math.sin(-midAngle * RADIAN);
-                      const item = byCat[index];
-                      const Icon = resolveIcon(item.icon);
-                      return (
-                        <g>
-                          <circle cx={x} cy={y} r={14} fill={item.color} stroke="#fff" strokeWidth={2} />
-                          <foreignObject x={x - 8} y={y - 8} width={16} height={16}>
-                            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%" }}>
-                              <Icon size={11} color="#fff" />
-                            </div>
-                          </foreignObject>
-                        </g>
-                      );
-                    }}
-                    labelLine={false}>
+                  <Pie data={byCat} dataKey="value" nameKey="name" innerRadius={72} outerRadius={104} paddingAngle={3} cornerRadius={8}>
                     {byCat.map((e, i) => <Cell key={i} fill={e.color} />)}
                   </Pie>
                   <Tooltip formatter={(v) => fmtTHB(v)} />
@@ -974,7 +940,7 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
               : "ยังไม่มีรายจ่าย";
             return (
               <div key={i} className="flex-1 flex flex-col items-center gap-2">
-                <div title={title} style={{ background: "#1B1B2F", width: "100%", maxWidth: 34, height: 120, borderRadius: 999, position: "relative", overflow: "hidden", opacity: m.isCurrent ? 1 : 0.82 }}>
+                <div title={title} style={{ background: m.value > 0 ? "#1B1B2F" : C.graySoft, width: "100%", maxWidth: 34, height: 120, borderRadius: 999, position: "relative", overflow: "hidden", opacity: m.isCurrent ? 1 : 0.82 }}>
                   <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: `${totalPct}%`, borderRadius: 999, overflow: "hidden", display: "flex", flexDirection: "column-reverse" }}>
                     {m.segments.map((s) => (
                       <div key={s.key} style={{ background: s.color, height: `${m.value > 0 ? (s.value / m.value) * 100 : 0}%`, width: "100%" }} />
