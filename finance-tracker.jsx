@@ -41,7 +41,7 @@ const C = {
 };
 
 const FONT_IMPORT = `
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700;800&display=swap');
 `;
 
 const ICON_LIBRARY = {
@@ -196,6 +196,14 @@ function fmtTHB(n) {
   return "฿" + v.toLocaleString("th-TH", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 function todayStr() { return toLocalDateStr(new Date()); }
+// Data retention: transactions older than 6 months are permanently purged
+// (not just hidden) — see loadData()'s cleanup step.
+const TRANSACTION_RETENTION_MONTHS = 6;
+function retentionCutoffStr() {
+  const d = new Date();
+  d.setMonth(d.getMonth() - TRANSACTION_RETENTION_MONTHS);
+  return toLocalDateStr(d);
+}
 function thDate(d) {
   try { return parseLocalDate(d).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }); }
   catch { return d; }
@@ -224,6 +232,23 @@ function computeStreak(transactions) {
 }
 
 const STORAGE_KEY = "finance-tracker-data";
+
+// Merge two arrays of records by an id field: union of both sides, so an
+// item added on one device is never silently erased by a save from another
+// device that doesn't know about it yet. On an actual same-id conflict
+// (edited on both sides), the local copy wins since it's the one the user
+// is looking at right now.
+function mergeArraysById(localArr, remoteArr, idField = "id") {
+  const map = new Map();
+  (remoteArr || []).forEach((item) => { if (item && item[idField] != null) map.set(item[idField], item); });
+  (localArr || []).forEach((item) => { if (item && item[idField] != null) map.set(item[idField], item); });
+  return Array.from(map.values());
+}
+// Shallow-merge two flat key->value maps: union of keys from both sides,
+// local wins on conflicts.
+function mergeMaps(localMap, remoteMap) {
+  return { ...(remoteMap || {}), ...(localMap || {}) };
+}
 
 /* ---------------------------------------------------------------- */
 
@@ -264,7 +289,11 @@ export default function FinanceTracker() {
       const res = await window.storage.get(STORAGE_KEY);
       if (res && res.value) {
         const data = JSON.parse(res.value);
-        setTransactions(data.transactions || []);
+        // Hard delete: keep only the last 6 months of transactions. This is
+        // permanent — anything older is dropped here and never written back.
+        const cutoff = retentionCutoffStr();
+        const keptTransactions = (data.transactions || []).filter((t) => t.date >= cutoff);
+        setTransactions(keptTransactions);
         setSavings(data.savings || []);
         setDebts(data.debts || []);
         setBudgets(data.budgets || {});
@@ -321,12 +350,51 @@ export default function FinanceTracker() {
   useEffect(() => {
     if (!loadedRef.current) return;
     const t = setTimeout(async () => {
+      const localBlob = {
+        transactions, savings, debts, budgets,
+        planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards,
+      };
       try {
-        await window.storage.set(STORAGE_KEY, JSON.stringify({
-          transactions, savings, debts, budgets,
-          planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards,
-        }));
-      } catch (e) { /* ignore */ }
+        // Read the latest remote data first and merge it with what we're
+        // about to save, so a save from this device never erases items
+        // that another device already added (e.g. while this tab was open).
+        const res = await window.storage.get(STORAGE_KEY);
+        const remote = res && res.value ? JSON.parse(res.value) : {};
+        const merged = {
+          transactions: mergeArraysById(transactions, remote.transactions).filter((t) => t.date >= retentionCutoffStr()),
+          savings: mergeArraysById(savings, remote.savings),
+          debts: mergeArraysById(debts, remote.debts),
+          budgets: mergeMaps(budgets, remote.budgets),
+          planIncomeItems: mergeArraysById(planIncomeItems, remote.planIncomeItems),
+          planFixCostItems: mergeArraysById(planFixCostItems, remote.planFixCostItems),
+          planOverrides,
+          savingsPlan,
+          cardSettings: mergeMaps(cardSettings, remote.cardSettings),
+          investPlan: { ...investPlan, items: mergeArraysById(investPlan.items, remote.investPlan?.items) },
+          holdings: mergeArraysById(holdings, remote.holdings),
+          homeLoan,
+          dismissedAlerts: mergeMaps(dismissedAlerts, remote.dismissedAlerts),
+          profiles,
+          expenseCategories: mergeArraysById(expenseCategories, remote.expenseCategories, "key"),
+          creditCards: mergeArraysById(creditCards, remote.creditCards, "name"),
+        };
+        await window.storage.set(STORAGE_KEY, JSON.stringify(merged));
+        // Reflect anything merged in from another device back into this
+        // tab immediately, not just on the next focus/visibility refresh.
+        if (merged.transactions.length !== transactions.length) setTransactions(merged.transactions);
+        if (merged.savings.length !== savings.length) setSavings(merged.savings);
+        if (merged.debts.length !== debts.length) setDebts(merged.debts);
+        if (merged.planIncomeItems.length !== planIncomeItems.length) setPlanIncomeItems(merged.planIncomeItems);
+        if (merged.planFixCostItems.length !== planFixCostItems.length) setPlanFixCostItems(merged.planFixCostItems);
+        if (merged.holdings.length !== holdings.length) setHoldings(merged.holdings);
+        if (merged.investPlan.items.length !== investPlan.items.length) setInvestPlan((p) => ({ ...p, items: merged.investPlan.items }));
+        if (Object.keys(merged.budgets).length !== Object.keys(budgets).length) setBudgets(merged.budgets);
+        if (Object.keys(merged.cardSettings).length !== Object.keys(cardSettings).length) setCardSettings(merged.cardSettings);
+      } catch (e) {
+        // Offline or request failed — fall back to a plain save of local
+        // state so nothing is lost locally; it'll merge properly next time.
+        try { await window.storage.set(STORAGE_KEY, JSON.stringify(localBlob)); } catch (e2) { /* ignore */ }
+      }
     }, 250);
     return () => clearTimeout(t);
   }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards]);
@@ -487,7 +555,7 @@ export default function FinanceTracker() {
 
   if (!ready) {
     return (
-      <div style={{ background: C.bg, minHeight: 480, fontFamily: "'Inter', sans-serif" }} className="w-full flex items-center justify-center p-10">
+      <div style={{ background: C.bg, minHeight: 480, fontFamily: "'Prompt', sans-serif" }} className="w-full flex items-center justify-center p-10">
         <style>{FONT_IMPORT}</style>
         <p style={{ color: C.inkSoft }}>กำลังโหลด...</p>
       </div>
@@ -495,7 +563,7 @@ export default function FinanceTracker() {
   }
 
   return (
-    <div style={{ background: C.bg, fontFamily: "'Inter', sans-serif", color: C.ink }} className="w-full min-h-full pb-24">
+    <div style={{ background: C.bg, fontFamily: "'Prompt', sans-serif", color: C.ink }} className="w-full min-h-full pb-24">
       <style>{FONT_IMPORT}</style>
       <Header streak={streak} points={points} alertCount={visibleAlerts.length} budgetPct={budgetPct}
         activeProfile={profileById(profiles, activeProfileId)} onOpenProfilePicker={() => setShowProfilePicker(true)}
@@ -559,13 +627,13 @@ function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenPr
         <button onClick={onOpenProfilePicker} className="flex items-center gap-3 text-left">
           <div style={{ background: activeProfile ? activeProfile.color : C.yellow }} className="w-11 h-11 rounded-full flex items-center justify-center shrink-0 shadow-sm">
             {activeProfile ? (
-              <span style={{ fontFamily: "'Manrope', sans-serif", color: "#fff" }} className="text-lg font-bold">{activeProfile.name.trim()[0]?.toUpperCase()}</span>
+              <span style={{ fontFamily: "'Prompt', sans-serif", color: "#fff" }} className="text-lg font-bold">{activeProfile.name.trim()[0]?.toUpperCase()}</span>
             ) : (
               <Wallet size={20} color={C.purpleDeep} strokeWidth={2.3} />
             )}
           </div>
           <div>
-            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-lg font-bold leading-tight">{activeProfile ? `สวัสดี, ${activeProfile.name} 👋` : "สวัสดี 👋"}</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold leading-tight">{activeProfile ? `สวัสดี, ${activeProfile.name} 👋` : "สวัสดี 👋"}</p>
             <p style={{ color: "#DCDCFB" }} className="text-xs leading-tight">{activeProfile ? "แตะเพื่อสลับผู้ใช้งาน" : "แตะเพื่อตั้งชื่อผู้ใช้งาน"}</p>
           </div>
         </button>
@@ -657,7 +725,7 @@ function ProfilePickerModal({ profiles, setProfiles, activeProfileId, setActiveP
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.45)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
       <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 380, width: "100%" }} onClick={(e) => e.stopPropagation()}>
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg mb-1">ชื่อของคุณ</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg mb-1">ชื่อของคุณ</p>
         <p className="text-xs mb-4" style={{ color: C.inkSoft }}>ใช้แสดงในหน้าทักทายเท่านั้น ข้อมูลทั้งหมดในแอปนี้เป็นของคุณคนเดียวอยู่แล้ว</p>
 
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อของคุณ" style={{ ...inputStyle, marginBottom: 12 }} autoFocus />
@@ -679,7 +747,7 @@ function ProfilePickerModal({ profiles, setProfiles, activeProfileId, setActiveP
 function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategories }) {
   const [period, setPeriod] = useState("month");
   const [ref, setRef] = useState(new Date());
-  const [trendMonths, setTrendMonths] = useState(6);
+  const TREND_MONTHS = 6;
 
   const hasToday = transactions.some((t) => t.date === todayStr());
 
@@ -687,29 +755,34 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
     const now = new Date();
     const nowYm = ymOf(now);
     const months = [];
-    for (let i = trendMonths - 1; i >= 0; i--) {
+    for (let i = TREND_MONTHS - 1; i >= 0; i--) {
       months.push(ymOf(new Date(now.getFullYear(), now.getMonth() - i, 1)));
     }
     return months.map((ym) => {
-      const row = { ym };
-      expenseCategories.forEach((c) => { row[c.key] = 0; });
+      const byCat = {};
       let total = 0;
       transactions
         .filter((t) => t.type === "expense" && t.payment !== "credit" && t.date.slice(0, 7) === ym)
         .forEach((t) => {
           const mainCat = resolveMainCategory(expenseCategories, t.category);
-          row[mainCat] = (row[mainCat] || 0) + Number(t.amount);
+          byCat[mainCat] = (byCat[mainCat] || 0) + Number(t.amount);
           total += Number(t.amount);
         });
+      const segments = expenseCategories
+        .map((c) => ({ key: c.key, label: c.label, color: c.color, value: byCat[c.key] || 0 }))
+        .filter((s) => s.value > 0)
+        .sort((a, b) => b.value - a.value);
       const [y, m] = ym.split("-").map(Number);
-      row.label = MONTH_ABBR_TH[m - 1];
-      row.value = total;
-      row.isCurrent = ym === nowYm;
-      return row;
+      return { ym, label: MONTH_ABBR_TH[m - 1], value: total, segments, isCurrent: ym === nowYm };
     });
-  }, [transactions, trendMonths, expenseCategories]);
+  }, [transactions, expenseCategories]);
   const trendAvg = monthlyTrend.length ? monthlyTrend.reduce((a, m) => a + m.value, 0) / monthlyTrend.length : 0;
-  const trendCats = useMemo(() => expenseCategories.filter((c) => monthlyTrend.some((r) => r[c.key] > 0)), [monthlyTrend, expenseCategories]);
+  const trendCats = useMemo(() => {
+    const seen = new Map();
+    monthlyTrend.forEach((m) => m.segments.forEach((s) => { if (!seen.has(s.key)) seen.set(s.key, s); }));
+    return Array.from(seen.values());
+  }, [monthlyTrend]);
+  const trendMax = Math.max(...monthlyTrend.map((m) => m.value), 1);
 
   const range = useMemo(() => {
     const d = new Date(ref);
@@ -747,7 +820,7 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
   const byCat = useMemo(() => {
     const m = {};
     filtered.filter((t) => t.type === "expense").forEach((t) => { const k = resolveMainCategory(expenseCategories, t.category); m[k] = (m[k] || 0) + Number(t.amount); });
-    return Object.entries(m).map(([k, v]) => ({ name: catMeta(expenseCategories, k).label, value: v, avgPerDay: v / daysInPeriod, color: categoryColor(expenseCategories, k) })).sort((a, b) => b.value - a.value);
+    return Object.entries(m).map(([k, v]) => ({ key: k, name: catMeta(expenseCategories, k).label, icon: catMeta(expenseCategories, k).icon, value: v, avgPerDay: v / daysInPeriod, color: categoryColor(expenseCategories, k) })).sort((a, b) => b.value - a.value);
   }, [filtered, daysInPeriod, expenseCategories]);
   const byCatTotal = byCat.reduce((a, c) => a + c.value, 0);
 
@@ -761,19 +834,17 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
 
   return (
     <div className="flex flex-col gap-4">
-      <button onClick={() => setTab("transactions")} style={{ background: hasToday ? `linear-gradient(135deg, ${C.teal}, #22A184)` : `linear-gradient(135deg, ${C.yellow}, ${C.yellowDeep})` }} className="w-full text-left rounded-3xl p-5 flex items-center justify-between shadow-sm">
-        <div>
-          <p style={{ fontFamily: "'Manrope', sans-serif", color: hasToday ? "#fff" : C.purpleDeep }} className="text-lg font-bold mb-1">
-            {hasToday ? "เยี่ยม! วันนี้บันทึกแล้ว 🎉" : "ยังไม่ได้บันทึกวันนี้เลยนะ"}
-          </p>
-          <p className="text-sm" style={{ color: hasToday ? "#E4FBF3" : "#7A5B00" }}>
-            {hasToday ? "แตะเพื่อเพิ่มรายการอีก" : "แตะเพื่อบันทึกรายรับ-รายจ่ายวันนี้"}
-          </p>
-        </div>
-        <div style={{ background: "rgba(255,255,255,0.35)" }} className="w-11 h-11 rounded-full flex items-center justify-center shrink-0">
-          {hasToday ? <PartyPopper size={20} color="#fff" /> : <Plus size={20} color={C.purpleDeep} />}
-        </div>
-      </button>
+      {!hasToday && (
+        <button onClick={() => setTab("transactions")} style={{ background: `linear-gradient(135deg, ${C.yellow}, ${C.yellowDeep})` }} className="w-full text-left rounded-3xl p-5 flex items-center justify-between shadow-sm">
+          <div>
+            <p style={{ fontFamily: "'Prompt', sans-serif", color: C.purpleDeep }} className="text-lg font-bold mb-1">ยังไม่ได้บันทึกวันนี้เลยนะ</p>
+            <p className="text-sm" style={{ color: "#7A5B00" }}>แตะเพื่อบันทึกรายรับ-รายจ่ายวันนี้</p>
+          </div>
+          <div style={{ background: "rgba(255,255,255,0.35)" }} className="w-11 h-11 rounded-full flex items-center justify-center shrink-0">
+            <Plus size={20} color={C.purpleDeep} />
+          </div>
+        </button>
+      )}
 
       {alerts.length > 0 && <AlertBanner alerts={alerts} onDismiss={onDismissAlert} />}
 
@@ -785,15 +856,104 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
         </div>
         <div className="flex items-center gap-2 text-sm" style={{ color: C.inkSoft }}>
           <button onClick={() => shift(-1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-1.5 rounded-full"><ChevronLeft size={14} /></button>
-          <span style={{ fontFamily: "'Manrope', sans-serif", color: C.ink }} className="font-bold">{range.label}</span>
+          <span style={{ fontFamily: "'Prompt', sans-serif", color: C.ink }} className="font-bold">{range.label}</span>
           <button onClick={() => shift(1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-1.5 rounded-full"><ChevronRight size={14} /></button>
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
-        <StatCard label="รายรับ" value={income} icon={TrendingUp} color={C.teal} />
-        <StatCard label="รายจ่าย" value={expense} icon={TrendingDown} color={C.coral} />
-        <StatCard label="คงเหลือ" value={income - expense} icon={Wallet} color={C.purple} />
+      <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-5 shadow-sm text-white relative overflow-hidden">
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-xs font-semibold" style={{ color: "rgba(255,255,255,0.75)" }}>คงเหลือ{period === "day" ? "วันนี้" : period === "month" ? "เดือนนี้" : "ปีนี้"}</p>
+          <span style={{ background: "rgba(255,255,255,0.18)" }} className="text-[11px] font-bold px-2.5 py-1 rounded-full">{range.label}</span>
+        </div>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold mb-4">{fmtTHB(income - expense)}</p>
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.22)" }} className="flex items-center pt-3 gap-4">
+          <div className="flex-1 flex items-center gap-2">
+            <div style={{ background: "rgba(255,255,255,0.18)" }} className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"><TrendingUp size={15} /></div>
+            <div>
+              <p className="text-[11px]" style={{ color: "rgba(255,255,255,0.75)" }}>รายรับ</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold">{fmtTHB(income)}</p>
+            </div>
+          </div>
+          <div style={{ background: "rgba(255,255,255,0.22)", width: 1, alignSelf: "stretch" }} />
+          <div className="flex-1 flex items-center gap-2">
+            <div style={{ background: "rgba(255,255,255,0.18)" }} className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"><TrendingDown size={15} /></div>
+            <div>
+              <p className="text-[11px]" style={{ color: "rgba(255,255,255,0.75)" }}>รายจ่าย</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold">{fmtTHB(expense)}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
+        <div className="flex items-center justify-between mb-1">
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">สัดส่วนรายจ่ายตามหมวดหมู่</p>
+          {byCatTotal > 0 && <span className="text-xs font-bold" style={{ color: C.inkSoft }}>เฉลี่ยรวม {fmtTHB(byCatTotal / daysInPeriod)}/วัน</span>}
+        </div>
+        {byCat.length > 0 && <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>คำนวณจาก {daysInPeriod} วันในช่วงนี้ · รวมทุกช่องทางชำระเงิน (เงินสด/โอน/บัตรเครดิต) · ยอดของหมวดหมู่หลักรวมหมวดหมู่ย่อยทั้งหมดไว้แล้ว</p>}
+        {byCat.length > 0 && (() => {
+          const top = byCat[0];
+          const TopIcon = resolveIcon(top.icon);
+          const pct = byCatTotal > 0 ? Math.round((top.value / byCatTotal) * 100) : 0;
+          return (
+            <div style={{ background: C.bg }} className="flex items-center gap-3 rounded-2xl px-3.5 py-3 mb-4">
+              <div style={{ background: top.color }} className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"><TopIcon size={17} color="#fff" /></div>
+              <p className="text-xs leading-snug">
+                หมวด <b style={{ color: C.ink }}>{top.name}</b> ใช้จ่ายไป <b style={{ color: C.ink, fontFamily: "'Prompt', sans-serif" }}>{fmtTHB(top.value)}</b> คิดเป็น <b style={{ color: top.color }}>{pct}%</b> ของรายจ่ายทั้งหมดในช่วงนี้
+              </p>
+            </div>
+          );
+        })()}
+        {byCat.length === 0 ? <EmptyNote text="ยังไม่มีรายจ่ายในช่วงนี้" /> : (
+          <div className="flex flex-col items-center gap-5">
+            <div style={{ width: "100%", maxWidth: 260, height: 260, position: "relative" }}>
+              <ResponsiveContainer>
+                <PieChart>
+                  <Pie data={byCat} dataKey="value" nameKey="name" innerRadius={72} outerRadius={104} paddingAngle={3} cornerRadius={8}
+                    label={(props) => {
+                      const { cx, cy, midAngle, outerRadius: r, index } = props;
+                      const RADIAN = Math.PI / 180;
+                      const radius = r + 18;
+                      const x = cx + radius * Math.cos(-midAngle * RADIAN);
+                      const y = cy + radius * Math.sin(-midAngle * RADIAN);
+                      const item = byCat[index];
+                      const Icon = resolveIcon(item.icon);
+                      return (
+                        <g>
+                          <circle cx={x} cy={y} r={14} fill={item.color} stroke="#fff" strokeWidth={2} />
+                          <foreignObject x={x - 8} y={y - 8} width={16} height={16}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%" }}>
+                              <Icon size={11} color="#fff" />
+                            </div>
+                          </foreignObject>
+                        </g>
+                      );
+                    }}
+                    labelLine={false}>
+                    {byCat.map((e, i) => <Cell key={i} fill={e.color} />)}
+                  </Pie>
+                  <Tooltip formatter={(v) => fmtTHB(v)} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                <p className="text-xs font-semibold" style={{ color: C.inkSoft }}>{period === "day" ? "วันนี้" : period === "month" ? "เดือนนี้" : "ปีนี้"}</p>
+                <p style={{ fontFamily: "'Prompt', sans-serif", color: C.ink }} className="text-2xl font-extrabold">{fmtTHB(byCatTotal)}</p>
+              </div>
+            </div>
+            <div className="w-full flex flex-col gap-2.5">
+              {byCat.map((e, i) => (
+                <div key={i} className="flex items-center justify-between text-sm">
+                  <span className="flex items-center gap-2 font-semibold"><span style={{ width: 10, height: 10, borderRadius: 10, background: e.color }} />{e.name}</span>
+                  <div className="text-right">
+                    <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold leading-tight">{fmtTHB(e.value)}</p>
+                    <p className="text-[10px] leading-tight" style={{ color: C.inkSoft }}>เฉลี่ย {fmtTHB(e.avgPerDay)}/วัน</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {creditExpense > 0 && (
@@ -804,32 +964,30 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
       )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <div className="flex items-center justify-between mb-1">
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">เปรียบเทียบรายจ่ายรายเดือน</p>
-          <div className="flex rounded-full overflow-hidden p-0.5" style={{ background: C.graySoft }}>
-            {[6, 12].map((n) => (
-              <button key={n} onClick={() => setTrendMonths(n)} style={{ background: trendMonths === n ? C.purple : "transparent", color: trendMonths === n ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold">{n} เดือน</button>
-            ))}
-          </div>
-        </div>
-        <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>เฉลี่ย {fmtTHB(trendAvg)}/เดือน · แยกสีตามหมวดหมู่ · นับเฉพาะเงินสด/โอน (ไม่รวมบัตรเครดิต)</p>
-        <div style={{ width: "100%", height: 200 }}>
-          <ResponsiveContainer>
-            <BarChart data={monthlyTrend} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.graySoft} vertical={false} />
-              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 10 }} width={44} tickFormatter={(v) => v >= 1000 ? `${Math.round(v / 1000)}k` : v} />
-              <Tooltip formatter={(v, name) => [fmtTHB(v), catMeta(expenseCategories, name).label]} labelFormatter={(l) => l} />
-              {expenseCategories.map((c, ci) => (
-                <Bar key={c.key} dataKey={c.key} stackId="exp" fill={c.color} radius={ci === expenseCategories.length - 1 ? [6, 6, 0, 0] : [0, 0, 0, 0]}>
-                  {monthlyTrend.map((row, i) => <Cell key={i} fillOpacity={row.isCurrent ? 1 : 0.5} />)}
-                </Bar>
-              ))}
-            </BarChart>
-          </ResponsiveContainer>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-1">เปรียบเทียบรายจ่ายรายเดือน</p>
+        <p className="text-[11px] mb-4" style={{ color: C.inkSoft }}>เฉลี่ย {fmtTHB(trendAvg)}/เดือน · 6 เดือนล่าสุด · แยกสีตามหมวดหมู่ · นับเฉพาะเงินสด/โอน (ไม่รวมบัตรเครดิต)</p>
+        <div className="flex items-end justify-between gap-2.5" style={{ height: 160 }}>
+          {monthlyTrend.map((m, i) => {
+            const totalPct = trendMax > 0 ? Math.max(m.value > 0 ? 4 : 0, Math.round((m.value / trendMax) * 100)) : 0;
+            const title = m.segments.length > 0
+              ? m.segments.map((s) => `${s.label}: ${fmtTHB(s.value)}`).join("\n") + `\nรวม: ${fmtTHB(m.value)}`
+              : "ยังไม่มีรายจ่าย";
+            return (
+              <div key={i} className="flex-1 flex flex-col items-center gap-2">
+                <div title={title} style={{ background: "#1B1B2F", width: "100%", maxWidth: 34, height: 120, borderRadius: 999, position: "relative", overflow: "hidden", opacity: m.isCurrent ? 1 : 0.82 }}>
+                  <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: `${totalPct}%`, borderRadius: 999, overflow: "hidden", display: "flex", flexDirection: "column-reverse" }}>
+                    {m.segments.map((s) => (
+                      <div key={s.key} style={{ background: s.color, height: `${m.value > 0 ? (s.value / m.value) * 100 : 0}%`, width: "100%" }} />
+                    ))}
+                  </div>
+                </div>
+                <span style={{ color: m.isCurrent ? C.ink : C.inkSoft, fontWeight: m.isCurrent ? 800 : 600 }} className="text-[11px]">{m.label}</span>
+              </div>
+            );
+          })}
         </div>
         {trendCats.length > 0 && (
-          <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-3">
+          <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-4">
             {trendCats.map((c) => (
               <span key={c.key} className="flex items-center gap-1.5 text-[11px] font-semibold" style={{ color: C.inkSoft }}>
                 <span style={{ background: c.color, width: 8, height: 8, borderRadius: 8 }} />{c.label}
@@ -839,38 +997,6 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
         )}
       </div>
 
-      <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <div className="flex items-center justify-between mb-1">
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">สัดส่วนรายจ่ายตามหมวดหมู่</p>
-          {byCatTotal > 0 && <span className="text-xs font-bold" style={{ color: C.inkSoft }}>เฉลี่ยรวม {fmtTHB(byCatTotal / daysInPeriod)}/วัน</span>}
-        </div>
-        {byCat.length > 0 && <p className="text-[11px] mb-3" style={{ color: C.inkSoft }}>คำนวณจาก {daysInPeriod} วันในช่วงนี้ · รวมทุกช่องทางชำระเงิน (เงินสด/โอน/บัตรเครดิต) · ยอดของหมวดหมู่หลักรวมหมวดหมู่ย่อยทั้งหมดไว้แล้ว</p>}
-        {byCat.length === 0 ? <EmptyNote text="ยังไม่มีรายจ่ายในช่วงนี้" /> : (
-          <div className="flex flex-col sm:flex-row items-center gap-4">
-            <div style={{ width: "100%", maxWidth: 200, height: 190 }}>
-              <ResponsiveContainer>
-                <PieChart>
-                  <Pie data={byCat} dataKey="value" nameKey="name" innerRadius={44} outerRadius={78} paddingAngle={3} cornerRadius={6}>
-                    {byCat.map((e, i) => <Cell key={i} fill={e.color} />)}
-                  </Pie>
-                  <Tooltip formatter={(v) => fmtTHB(v)} />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="flex-1 w-full flex flex-col gap-2.5">
-              {byCat.map((e, i) => (
-                <div key={i} className="flex items-center justify-between text-sm">
-                  <span className="flex items-center gap-2 font-semibold"><span style={{ width: 10, height: 10, borderRadius: 10, background: e.color }} />{e.name}</span>
-                  <div className="text-right">
-                    <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold leading-tight">{fmtTHB(e.value)}</p>
-                    <p className="text-[10px] leading-tight" style={{ color: C.inkSoft }}>เฉลี่ย {fmtTHB(e.avgPerDay)}/วัน</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -883,7 +1009,7 @@ function StatCard({ label, value, icon: Icon, color }) {
       </div>
       <div>
         <p className="text-[11px] font-semibold" style={{ color: C.inkSoft }}>{label}</p>
-        <p style={{ fontFamily: "'Manrope', sans-serif", color }} className="text-sm font-bold truncate">{fmtTHB(value)}</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif", color }} className="text-sm font-bold truncate">{fmtTHB(value)}</p>
       </div>
     </div>
   );
@@ -909,6 +1035,87 @@ function AlertBanner({ alerts, onDismiss }) {
 
 function EmptyNote({ text }) { return <p className="text-sm py-6 text-center" style={{ color: C.inkSoft }}>{text}</p>; }
 
+function DateRangePicker({ from, to, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [viewDate, setViewDate] = useState(() => parseLocalDate(from || todayStr()));
+  const [tempFrom, setTempFrom] = useState(from || null);
+  const [tempTo, setTempTo] = useState(to || null);
+
+  function openPicker() {
+    setTempFrom(from || null);
+    setTempTo(to || null);
+    setViewDate(parseLocalDate(from || todayStr()));
+    setOpen(true);
+  }
+  function dayClick(dStr) {
+    if (!tempFrom || tempTo) { setTempFrom(dStr); setTempTo(null); return; }
+    if (dStr < tempFrom) { setTempFrom(dStr); return; }
+    setTempTo(dStr);
+  }
+  function apply() {
+    onChange(tempFrom || "", tempTo || tempFrom || "");
+    setOpen(false);
+  }
+  function clear() {
+    setTempFrom(null); setTempTo(null);
+    onChange("", "");
+    setOpen(false);
+  }
+  function shiftMonth(n) { setViewDate((d) => new Date(d.getFullYear(), d.getMonth() + n, 1)); }
+
+  const y = viewDate.getFullYear(), m = viewDate.getMonth();
+  const firstDow = new Date(y, m, 1).getDay();
+  const daysCount = new Date(y, m + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysCount; d++) cells.push(d);
+
+  const label = !from ? "เลือกช่วงวันที่" : (to && to !== from) ? `${thDate(from)} - ${thDate(to)}` : thDate(from);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button onClick={openPicker} style={{ ...inputStyle, width: "auto", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} className="text-xs font-semibold">
+        <Calendar size={13} color={C.inkSoft} />{label}
+      </button>
+      {open && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 200 }} onClick={() => setOpen(false)} />
+          <div style={{ position: "absolute", top: "110%", left: 0, background: C.card, borderRadius: 20, padding: 16, boxShadow: "0 8px 28px rgba(0,0,0,0.14)", zIndex: 201, width: 288 }}>
+            <div className="flex items-center justify-between mb-3">
+              <button onClick={() => shiftMonth(-1)} style={{ background: C.graySoft }} className="p-1.5 rounded-full"><ChevronLeft size={14} /></button>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold">{MONTH_ABBR_TH[m]} {y + 543}</p>
+              <button onClick={() => shiftMonth(1)} style={{ background: C.graySoft }} className="p-1.5 rounded-full"><ChevronRight size={14} /></button>
+            </div>
+            <div className="grid grid-cols-7 gap-y-1 text-center">
+              {["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"].map((d) => <span key={d} className="text-[10px] font-bold" style={{ color: C.inkSoft }}>{d}</span>)}
+              {cells.map((d, i) => {
+                if (!d) return <span key={i} />;
+                const dStr = `${y}-${pad2(m + 1)}-${pad2(d)}`;
+                const inRange = tempFrom && tempTo && dStr >= tempFrom && dStr <= tempTo;
+                const isEdge = dStr === tempFrom || dStr === tempTo;
+                return (
+                  <button key={i} onClick={() => dayClick(dStr)}
+                    style={{
+                      background: isEdge ? C.purple : inRange ? C.purpleSoft : "transparent",
+                      color: isEdge ? "#fff" : C.ink,
+                      borderRadius: 999, width: 30, height: 30, fontSize: 12, fontWeight: isEdge ? 800 : 600,
+                    }} className="mx-auto flex items-center justify-center">
+                    {d}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex gap-2 mt-3">
+              <button onClick={clear} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2 rounded-full text-xs font-bold">ล้าง</button>
+              <button onClick={apply} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex-1 py-2 rounded-full text-xs font-bold">ตกลง</button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------- */
 function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, expenseCategories, creditCards }) {
   const [editingId, setEditingId] = useState(null);
@@ -921,9 +1128,12 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
   const [date, setDate] = useState(todayStr());
   const [note, setNote] = useState("");
   const [filter, setFilter] = useState("all");
-  const [categoryFilter, setCategoryFilter] = useState("all");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState([]);
+  const now0 = new Date();
+  const defaultDateFrom = toLocalDateStr(new Date(now0.getFullYear(), now0.getMonth(), 1));
+  const defaultDateTo = toLocalDateStr(new Date(now0.getFullYear(), now0.getMonth() + 1, 0));
+  const [dateFrom, setDateFrom] = useState(defaultDateFrom);
+  const [dateTo, setDateTo] = useState(defaultDateTo);
   const [toast, setToast] = useState(null);
   const [catError, setCatError] = useState(false);
   const [payError, setPayError] = useState(false);
@@ -992,7 +1202,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
   const sorted = [...transactions].sort((a, b) => (a.date < b.date ? 1 : -1));
   const byType = filter === "all" ? sorted : sorted.filter((t) => t.type === filter);
   let visible = byType;
-  if (categoryFilter !== "all") visible = visible.filter((t) => resolveMainCategory(expenseCategories, t.category) === categoryFilter);
+  if (categoryFilter.length > 0) visible = visible.filter((t) => categoryFilter.includes(resolveMainCategory(expenseCategories, t.category)));
   if (dateFrom) visible = visible.filter((t) => t.date >= dateFrom);
   if (dateTo) visible = visible.filter((t) => t.date <= dateTo);
 
@@ -1009,9 +1219,9 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
             <div style={{ background: C.coralSoft, width: 56, height: 56, borderRadius: 56 }} className="flex items-center justify-center mx-auto mb-3">
               <AlertTriangle size={26} color={C.coral} />
             </div>
-            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg mb-1.5">ใช้จ่ายเกินงบแล้ว!</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg mb-1.5">ใช้จ่ายเกินงบแล้ว!</p>
             <p className="text-sm mb-4" style={{ color: C.inkSoft }}>
-              หมวด <b style={{ color: C.ink }}>{catMeta(expenseCategories, budgetAlert.category).label}</b> เดือนนี้ใช้ไป <b style={{ color: C.coral, fontFamily: "'Manrope', sans-serif" }}>{fmtTHB(budgetAlert.spent)}</b> จากงบที่ตั้งไว้ <b style={{ color: C.ink }}>{fmtTHB(budgetAlert.limit)}</b>
+              หมวด <b style={{ color: C.ink }}>{catMeta(expenseCategories, budgetAlert.category).label}</b> เดือนนี้ใช้ไป <b style={{ color: C.coral, fontFamily: "'Prompt', sans-serif" }}>{fmtTHB(budgetAlert.spent)}</b> จากงบที่ตั้งไว้ <b style={{ color: C.ink }}>{fmtTHB(budgetAlert.limit)}</b>
             </p>
             <div className="flex gap-2">
               <button onClick={() => setBudgetAlert(null)} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2.5 rounded-full text-sm font-bold">รับทราบ</button>
@@ -1026,7 +1236,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
         <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowSubcatModal(false)}>
           <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">เลือกหมวดหมู่ย่อย</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">เลือกหมวดหมู่ย่อย</p>
               <button onClick={() => setShowSubcatModal(false)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
             </div>
             <div className="grid grid-cols-4 gap-y-4 gap-x-1">
@@ -1055,7 +1265,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
         <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowCardModal(false)}>
           <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">เลือกบัตรเครดิต</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">เลือกบัตรเครดิต</p>
               <button onClick={() => setShowCardModal(false)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
             </div>
             {creditCards.length === 0 ? (
@@ -1081,7 +1291,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
       )}
       <div style={{ background: C.card, border: editingId ? `2px solid ${C.purple}` : "none" }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">{editingId ? "แก้ไขรายการ" : "บันทึกรายการใหม่"}</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">{editingId ? "แก้ไขรายการ" : "บันทึกรายการใหม่"}</p>
           {editingId && <span style={{ background: C.purpleSoft, color: C.purpleDeep }} className="text-[11px] font-bold px-2.5 py-1 rounded-full">กำลังแก้ไข</span>}
         </div>
 
@@ -1090,7 +1300,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
           <button onClick={() => switchType("income")} style={{ background: type === "income" ? C.teal : "transparent", color: type === "income" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><TrendingUp size={14} />รายรับ</button>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3.5">
+        <div className="grid grid-cols-2 gap-3 mb-3.5">
           <Field label="จำนวนเงิน (บาท)"><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
           <Field label="วันที่"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} /></Field>
         </div>
@@ -1168,32 +1378,37 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
 
       <div>
         <div className="flex items-center justify-between mb-2.5 flex-wrap gap-2">
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">รายการทั้งหมด</p>
-          <div className="flex rounded-full overflow-hidden p-1" style={{ background: C.graySoft }}>
-            {[["all", "ทั้งหมด"], ["income", "รายรับ"], ["expense", "รายจ่าย"]].map(([k, l]) => (
-              <button key={k} onClick={() => setFilter(k)} style={{ background: filter === k ? C.card : "transparent" }} className="px-3 py-1 text-xs font-bold rounded-full">{l}</button>
-            ))}
-          </div>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">รายการทั้งหมด</p>
+          <DateRangePicker from={dateFrom} to={dateTo} onChange={(f, t) => { setDateFrom(f); setDateTo(t); }} />
         </div>
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
-            <option value="all">ทุกหมวดหมู่</option>
-            <optgroup label="รายจ่าย">
-              {expenseCategories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-            </optgroup>
-            <optgroup label="รายรับ">
-              {INCOME_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-            </optgroup>
-          </select>
-          <div className="flex items-center gap-1.5 text-xs" style={{ color: C.inkSoft }}>
-            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "7px 8px" }} />
-            <span>ถึง</span>
-            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "7px 8px" }} />
-          </div>
-          {(categoryFilter !== "all" || dateFrom || dateTo) && (
-            <button onClick={() => { setCategoryFilter("all"); setDateFrom(""); setDateTo(""); }} style={{ color: C.coral }} className="text-xs font-bold">ล้างตัวกรอง</button>
-          )}
+
+        <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="flex gap-2 rounded-2xl p-2 mb-3">
+          {[["all", "ทั้งหมด"], ["expense", "รายจ่าย"], ["income", "รายรับ"]].map(([k, l]) => (
+            <button key={k} onClick={() => { setFilter(k); setCategoryFilter([]); }}
+              style={{ background: filter === k ? "#fff" : "transparent", color: filter === k ? C.purpleDeep : "#fff", border: filter === k ? "none" : "1.5px solid rgba(255,255,255,0.5)" }}
+              className="flex-1 py-2 text-sm font-bold rounded-xl">{l}</button>
+          ))}
         </div>
+
+        <div className="flex gap-1.5 overflow-x-auto mb-3 pb-1" style={{ scrollbarWidth: "none" }}>
+          {(filter === "income" ? INCOME_CATEGORIES : filter === "expense" ? expenseCategories : [...expenseCategories, ...INCOME_CATEGORIES]).map((c) => {
+            const active = categoryFilter.includes(c.key);
+            const Icon = resolveIcon(c.icon);
+            return (
+              <button key={c.key} onClick={() => setCategoryFilter((prev) => active ? prev.filter((k) => k !== c.key) : [...prev, c.key])}
+                style={{ background: active ? (c.color || C.purple) : C.graySoft, color: active ? "#fff" : C.inkSoft }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap shrink-0">
+                <Icon size={12} />{c.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {(categoryFilter.length > 0 || dateFrom !== defaultDateFrom || dateTo !== defaultDateTo) && (
+          <div className="flex justify-end mb-3 -mt-2">
+            <button onClick={() => { setCategoryFilter([]); setDateFrom(defaultDateFrom); setDateTo(defaultDateTo); }} style={{ color: C.coral }} className="text-xs font-bold">ล้างตัวกรอง</button>
+          </div>
+        )}
         {visible.length === 0 ? <EmptyNote text="ยังไม่มีรายการ — เริ่มบันทึกรายการแรกของคุณด้านบน" /> : (
           <div className="flex flex-col gap-2">
             {visible.map((t) => {
@@ -1213,7 +1428,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
                       <span>{t.payment === "cash" ? "เงินสด" : t.payment === "transfer" ? "โอนเงิน" : `บัตร (${t.card})`}</span>
                     </p>
                   </div>
-                  <p style={{ fontFamily: "'Manrope', sans-serif", color: t.type === "expense" ? C.coral : C.teal }} className="text-sm font-bold whitespace-nowrap">
+                  <p style={{ fontFamily: "'Prompt', sans-serif", color: t.type === "expense" ? C.coral : C.teal }} className="text-sm font-bold whitespace-nowrap">
                     {t.type === "expense" ? "-" : "+"}{fmtTHB(t.amount)}
                   </p>
                   <button onClick={() => startEdit(t)} style={{ color: C.purple }} className="p-1"><Pencil size={14} /></button>
@@ -1234,7 +1449,7 @@ function Field({ label, children }) {
 
 const inputStyle = {
   background: C.bg, border: `1px solid ${C.graySoft}`, borderRadius: 12,
-  padding: "8px 12px", fontSize: 14, color: C.ink, width: "100%", fontFamily: "'Inter', sans-serif", fontWeight: 700,
+  padding: "8px 12px", fontSize: 14, color: C.ink, width: "100%", fontFamily: "'Prompt', sans-serif", fontWeight: 700,
 };
 
 /* ---------------------------------------------------------------- */
@@ -1263,12 +1478,12 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
         <div style={{ background: `linear-gradient(135deg, ${C.teal}, #22A184)` }} className="rounded-2xl p-4 text-white shadow-sm">
           <PiggyBank size={20} className="mb-2" />
           <p className="text-xs font-semibold opacity-90">เงินออมสะสม</p>
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalSaving)}</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalSaving)}</p>
         </div>
         <div style={{ background: `linear-gradient(135deg, ${C.blue}, #2E93C4)` }} className="rounded-2xl p-4 text-white shadow-sm">
           <TrendingUp size={20} className="mb-2" />
           <p className="text-xs font-semibold opacity-90">เงินลงทุนสะสม</p>
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalInvest)}</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalInvest)}</p>
         </div>
       </div>
 
@@ -1281,7 +1496,7 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
       {subTab === "log" && (
       <>
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">เพิ่มรายการออม / ลงทุน</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เพิ่มรายการออม / ลงทุน</p>
         <div className="flex rounded-full overflow-hidden p-1 mb-3.5 w-fit" style={{ background: C.graySoft }}>
           <button onClick={() => setKind("saving")} style={{ background: kind === "saving" ? C.teal : "transparent", color: kind === "saving" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><PiggyBank size={14} />เงินออม</button>
           <button onClick={() => setKind("investment")} style={{ background: kind === "investment" ? C.blue : "transparent", color: kind === "investment" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><TrendingUp size={14} />เงินลงทุน</button>
@@ -1296,7 +1511,7 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
       </div>
 
       <div>
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-2.5">รายการทั้งหมด</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-2.5">รายการทั้งหมด</p>
         {savings.length === 0 ? <EmptyNote text="ยังไม่มีรายการออมหรือลงทุน" /> : (
           <div className="flex flex-col gap-2">
             {savings.map((s) => {
@@ -1312,7 +1527,7 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
                       <p className="text-sm font-bold truncate">{s.name}</p>
                       <p className="text-xs" style={{ color: C.inkSoft }}>{thDate(s.date)}</p>
                     </div>
-                    <p style={{ fontFamily: "'Manrope', sans-serif", color }} className="text-sm font-bold">{fmtTHB(s.amount)}</p>
+                    <p style={{ fontFamily: "'Prompt', sans-serif", color }} className="text-sm font-bold">{fmtTHB(s.amount)}</p>
                     <button onClick={() => remove(s.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={14} /></button>
                   </div>
                   {pct !== null && (
@@ -1396,7 +1611,7 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions }) {
   return (
     <div className="flex flex-col gap-4">
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">เพิ่มรายการหนี้สิน / กำหนดชำระ</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เพิ่มรายการหนี้สิน / กำหนดชำระ</p>
         <div className="flex rounded-full overflow-hidden p-1 mb-3.5 w-fit" style={{ background: C.graySoft }}>
           <button onClick={() => setDebtType("other")} style={{ background: debtType === "other" ? C.purple : "transparent", color: debtType === "other" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">หนี้ทั่วไป</button>
           <button onClick={() => setDebtType("credit")} style={{ background: debtType === "credit" ? C.purple : "transparent", color: debtType === "credit" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><CreditCard size={14} />บัตรเครดิต</button>
@@ -1422,7 +1637,7 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions }) {
       </div>
 
       <div>
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-2.5">รายการหนี้สินทั้งหมด</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-2.5">รายการหนี้สินทั้งหมด</p>
         {sorted.length === 0 ? <EmptyNote text="ยังไม่มีรายการหนี้สินหรือกำหนดชำระ" /> : (
           <div className="flex flex-col gap-2">
             {sorted.map((d) => {
@@ -1444,7 +1659,7 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions }) {
                   <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-bold whitespace-nowrap px-2.5 py-1 rounded-full shrink-0">{statusText}</span>
                   <input type="number" min="0" defaultValue={d.amount} key={d.id + "-amt-" + d.amount}
                     onBlur={(e) => updateAmount(d.id, e.target.value)}
-                    style={{ ...inputStyle, width: 92, padding: "6px 8px", fontFamily: "'Manrope', sans-serif", fontWeight: 700, textAlign: "right" }} />
+                    style={{ ...inputStyle, width: 92, padding: "6px 8px", fontFamily: "'Prompt', sans-serif", fontWeight: 700, textAlign: "right" }} />
                   <button onClick={() => remove(d.id)} style={{ color: C.gray }} className="p-1 shrink-0"><Trash2 size={14} /></button>
                 </div>
               );
@@ -1564,13 +1779,13 @@ function MonthlyPlanTab({
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <button onClick={() => shiftMonth(-1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronLeft size={16} /></button>
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">{monthLabel(ym)}</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">{monthLabel(ym)}</p>
         <button onClick={() => shiftMonth(1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronRight size={16} /></button>
       </div>
 
       <div style={{ background: `linear-gradient(135deg, ${C.pink}, #D6478E)` }} className="rounded-3xl p-5 text-white shadow-sm">
         <p className="text-xs font-semibold opacity-90 mb-1">คงเหลือใช้ได้ตอนนี้ (หลังหักรายจ่ายที่บันทึกจริง)</p>
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(remainingNow)}</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(remainingNow)}</p>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <SummaryMini label="รายรับตามแผน" value={totalIncome} />
           <SummaryMini label="Fix cost" value={totalFixCost} sub={`${fixPct}% ของรายรับ`} />
@@ -1614,8 +1829,8 @@ function MonthlyPlanTab({
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold flex items-center gap-2"><Bell size={16} color={C.yellowDeep} />หนี้ที่ต้องชำระเดือนนี้</p>
-          <span style={{ fontFamily: "'Manrope', sans-serif" }} className="text-sm font-bold">{fmtTHB(totalDebt)}</span>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold flex items-center gap-2"><Bell size={16} color={C.yellowDeep} />หนี้ที่ต้องชำระเดือนนี้</p>
+          <span style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold">{fmtTHB(totalDebt)}</span>
         </div>
         {debtsThisMonth.length === 0 ? <EmptyNote text="ไม่มีรายการหนี้ครบกำหนดเดือนนี้" /> : (
           <div className="flex flex-col gap-2">
@@ -1623,7 +1838,7 @@ function MonthlyPlanTab({
               <div key={d.id} className="flex items-center gap-2.5 text-sm">
                 <span style={{ background: d.paid ? C.teal : C.coral }} className="w-2 h-2 rounded-full shrink-0" />
                 <span className="flex-1 font-semibold truncate">{d.name}{d.auto ? " · อัตโนมัติจากบัตรเครดิต" : ""}</span>
-                <span style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">{fmtTHB(d.amount)}</span>
+                <span style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">{fmtTHB(d.amount)}</span>
               </div>
             ))}
           </div>
@@ -1632,7 +1847,7 @@ function MonthlyPlanTab({
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">เป้าหมายออม & ลงทุนต่อเดือน</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เป้าหมายออม & ลงทุนต่อเดือน</p>
         <div className="flex flex-col gap-3">
           <AllocationRow label="เงินออม" color={C.teal} icon={PiggyBank} alloc={savingsPlan.saving}
             onChange={(alloc) => setSavingsPlan((p) => ({ ...p, saving: alloc }))} amount={savingAmt} />
@@ -1646,7 +1861,7 @@ function MonthlyPlanTab({
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <button onClick={() => setShowSettings((s) => !s)} className="w-full flex items-center justify-between">
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold flex items-center gap-2"><Settings size={16} />ตั้งค่าวันตัดรอบ/ครบกำหนดบัตรเครดิต</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold flex items-center gap-2"><Settings size={16} />ตั้งค่าวันตัดรอบ/ครบกำหนดบัตรเครดิต</p>
           {showSettings ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </button>
         {showSettings && (
@@ -1685,7 +1900,7 @@ function SummaryMini({ label, value, sub, isText }) {
   return (
     <div style={{ background: "rgba(255,255,255,0.18)" }} className="rounded-xl px-3 py-2">
       <p className="opacity-90 font-semibold">{label}</p>
-      <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-sm">{isText ? value : fmtTHB(value)}</p>
+      <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-sm">{isText ? value : fmtTHB(value)}</p>
       {sub && <p className="opacity-80 text-[10px]">{sub}</p>}
     </div>
   );
@@ -1697,7 +1912,7 @@ function AllocationRow({ label, color, icon: Icon, alloc, onChange, amount }) {
       <div className="flex items-center gap-2 mb-2">
         <div style={{ background: color }} className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"><Icon size={15} color="#fff" /></div>
         <p className="text-sm font-bold flex-1">{label}</p>
-        <p style={{ fontFamily: "'Manrope', sans-serif", color }} className="text-sm font-bold">{fmtTHB(amount)}</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif", color }} className="text-sm font-bold">{fmtTHB(amount)}</p>
       </div>
       <div className="flex items-center gap-2">
         <div className="flex rounded-full overflow-hidden p-0.5" style={{ background: C.graySoft }}>
@@ -1752,8 +1967,8 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
   return (
     <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
       <div className="flex items-center justify-between mb-3">
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold flex items-center gap-2"><Icon size={16} color={color} />{title}</p>
-        <span style={{ fontFamily: "'Manrope', sans-serif", color }} className="text-sm font-bold">{fmtTHB(total)}</span>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold flex items-center gap-2"><Icon size={16} color={color} />{title}</p>
+        <span style={{ fontFamily: "'Prompt', sans-serif", color }} className="text-sm font-bold">{fmtTHB(total)}</span>
       </div>
       {extraNote && <p className="text-xs font-semibold mb-3" style={{ color }}>{extraNote}</p>}
 
@@ -1929,7 +2144,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
       <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-5 text-white shadow-sm">
         <p className="text-xs font-semibold opacity-90 mb-1">ยอดเงินลงทุนทั้งหมด</p>
         <input type="number" min="0" value={totalPool || ""} onChange={(e) => setTotalPool(e.target.value)} placeholder="0.00"
-          style={{ background: "rgba(255,255,255,0.18)", border: "none", borderRadius: 12, padding: "8px 12px", color: "#fff", fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 22, width: "100%" }} />
+          style={{ background: "rgba(255,255,255,0.18)", border: "none", borderRadius: 12, padding: "8px 12px", color: "#fff", fontFamily: "'Prompt', sans-serif", fontWeight: 700, fontSize: 22, width: "100%" }} />
         <div className="grid grid-cols-2 gap-2 text-xs mt-3">
           <SummaryMini label="จัดสรรแล้ว" value={totalAllocated} />
           <SummaryMini label={remaining < 0 ? "เกินงบที่ตั้งไว้" : "ยังไม่ได้จัดสรร"} value={Math.abs(remaining)} />
@@ -1946,7 +2161,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
       <>
       {pieData.length > 0 && (
         <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">สัดส่วนพอร์ตการลงทุน</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">สัดส่วนพอร์ตการลงทุน</p>
           <div className="flex flex-col sm:flex-row items-center gap-4">
             <div style={{ width: "100%", maxWidth: 200, height: 190 }}>
               <ResponsiveContainer>
@@ -1962,7 +2177,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
               {pieData.map((e, i) => (
                 <div key={i} className="flex items-center justify-between text-sm">
                   <span className="flex items-center gap-2 font-semibold"><span style={{ width: 10, height: 10, borderRadius: 10, background: e.color }} />{e.name}</span>
-                  <span style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">{fmtTHB(e.value)}</span>
+                  <span style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">{fmtTHB(e.value)}</span>
                 </div>
               ))}
             </div>
@@ -1971,7 +2186,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
       )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">รายการลงทุน</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">รายการลงทุน</p>
         {items.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุน — เพิ่มรายการแรกด้านล่าง" /> : (
           <div className="flex flex-col gap-2 mb-1">
             {items.map((item) => {
@@ -2016,7 +2231,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
                     </div>
                     <input type="number" min="0" defaultValue={item.value} key={item.id + item.mode}
                       onBlur={(e) => updateItem(item.id, { value: parseFloat(e.target.value) || 0 })} style={{ ...inputStyle, width: 90 }} />
-                    <span style={{ fontFamily: "'Manrope', sans-serif", color: C.purple }} className="text-sm font-bold flex-1 text-right">{fmtTHB(amt)}</span>
+                    <span style={{ fontFamily: "'Prompt', sans-serif", color: C.purple }} className="text-sm font-bold flex-1 text-right">{fmtTHB(amt)}</span>
                     <button onClick={() => markExecuted(item)} title="ทำเครื่องหมายว่าลงทุนแล้ว" style={{ color: item.executed ? C.teal : C.graySoft }}><CheckCircle2 size={20} /></button>
                     <button onClick={() => removeItem(item.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={13} /></button>
                   </div>
@@ -2044,7 +2259,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">เพิ่มรายการลงทุนใหม่</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เพิ่มรายการลงทุนใหม่</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
           <Field label="ชื่อรายการลงทุน"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น กองทุน SET50" style={inputStyle} /></Field>
           <Field label="หมวดหมู่">
@@ -2155,17 +2370,17 @@ function InvestMonthlyPlanner({ investPlan, setInvestPlan }) {
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <button onClick={() => setYm((p) => addMonths(p, -1))} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronLeft size={16} /></button>
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">{monthLabel(ym)}</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">{monthLabel(ym)}</p>
         <button onClick={() => setYm((p) => addMonths(p, 1))} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronRight size={16} /></button>
       </div>
 
       <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-5 text-white shadow-sm">
         <p className="text-xs font-semibold opacity-90 mb-1">แผนลงทุนรวมเดือนนี้</p>
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(monthTotal)}</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(monthTotal)}</p>
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">กำหนดยอดแต่ละรายการสำหรับเดือนนี้</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">กำหนดยอดแต่ละรายการสำหรับเดือนนี้</p>
         {rows.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุน — ไปเพิ่มที่แท็บ 'รายการ' ก่อน" /> : (
           <div className="flex flex-col gap-2">
             {rows.map(({ item, amt, overridden }) => (
@@ -2228,15 +2443,15 @@ function InvestSummary({ savings }) {
         <>
           <div className="flex items-center justify-between">
             <button onClick={() => setYear((y) => y - 1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronLeft size={16} /></button>
-            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">ปี {year + 543}</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">ปี {year + 543}</p>
             <button onClick={() => setYear((y) => y + 1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronRight size={16} /></button>
           </div>
           <div style={{ background: `linear-gradient(135deg, ${C.teal}, #22A184)` }} className="rounded-3xl p-5 text-white shadow-sm">
             <p className="text-xs font-semibold opacity-90 mb-1">รวมเงินลงทุนจริงปีนี้</p>
-            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(yearTotal)}</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(yearTotal)}</p>
           </div>
           <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแต่ละเดือน</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแต่ละเดือน</p>
             {yearTotal === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุนจริงในปีนี้" /> : (
               <div style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
@@ -2256,10 +2471,10 @@ function InvestSummary({ savings }) {
         <>
           <div style={{ background: `linear-gradient(135deg, ${C.blue}, #2E93C4)` }} className="rounded-3xl p-5 text-white shadow-sm">
             <p className="text-xs font-semibold opacity-90 mb-1">รวมเงินลงทุนจริงทั้งหมด</p>
-            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(allTimeTotal)}</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(allTimeTotal)}</p>
           </div>
           <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแยกตามปี</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแยกตามปี</p>
             {yearlyData.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุนจริง" /> : (
               <div style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
@@ -2317,13 +2532,13 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
     <div className="flex flex-col gap-4">
       <div style={{ background: `linear-gradient(135deg, ${gainColor}, ${totalGain >= 0 ? "#22A184" : "#D6472C"})` }} className="rounded-3xl p-5 text-white shadow-sm">
         <p className="text-xs font-semibold opacity-90 mb-1">มูลค่าปัจจุบันของพอร์ต</p>
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(totalCurrent)}</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(totalCurrent)}</p>
         <div className="grid grid-cols-3 gap-2 text-xs">
           <SummaryMini label="เงินลงทุนทั้งหมด" value={totalInvested} />
           <SummaryMini label="กำไร/ขาดทุน" value={totalGain} />
           <div style={{ background: "rgba(255,255,255,0.18)" }} className="rounded-xl px-3 py-2">
             <p className="opacity-90 font-semibold">ผลตอบแทน</p>
-            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-sm flex items-center gap-1">
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-sm flex items-center gap-1">
               {totalGain >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}{totalGainPct >= 0 ? "+" : ""}{totalGainPct.toFixed(1)}%
             </p>
           </div>
@@ -2332,7 +2547,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
 
       {pieData.length > 0 && (
         <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">สัดส่วนมูลค่าปัจจุบันตามรายการ</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">สัดส่วนมูลค่าปัจจุบันตามรายการ</p>
           <div className="flex flex-col sm:flex-row items-center gap-4">
             <div style={{ width: "100%", maxWidth: 200, height: 190 }}>
               <ResponsiveContainer>
@@ -2348,7 +2563,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
               {pieData.map((e, i) => (
                 <div key={i} className="flex items-center justify-between text-sm">
                   <span className="flex items-center gap-2 font-semibold"><span style={{ width: 10, height: 10, borderRadius: 10, background: e.color }} />{e.name}</span>
-                  <span style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">{fmtTHB(e.value)}</span>
+                  <span style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">{fmtTHB(e.value)}</span>
                 </div>
               ))}
             </div>
@@ -2357,7 +2572,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
       )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">รายการที่ลงทุนอยู่ตอนนี้</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">รายการที่ลงทุนอยู่ตอนนี้</p>
         {holdings.length === 0 ? <EmptyNote text="ยังไม่มีรายการ — เพิ่มรายการลงทุนที่มีอยู่แล้วด้านล่าง" /> : (
           <div className="flex flex-col gap-2">
             {holdings.map((h) => {
@@ -2378,7 +2593,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
                     </span>
                   </div>
                   <div className="flex items-center gap-3 ml-11 text-xs" style={{ color: C.inkSoft }}>
-                    <span>ลงทุน: <b style={{ color: C.ink, fontFamily: "'Manrope', sans-serif" }}>{fmtTHB(h.invested)}</b></span>
+                    <span>ลงทุน: <b style={{ color: C.ink, fontFamily: "'Prompt', sans-serif" }}>{fmtTHB(h.invested)}</b></span>
                     <span className="flex items-center gap-1">มูลค่าปัจจุบัน:
                       <input type="number" min="0" defaultValue={h.current} key={h.id + h.current}
                         onBlur={(e) => updateCurrent(h.id, e.target.value)} style={{ ...inputStyle, width: 90, padding: "4px 8px" }} />
@@ -2394,7 +2609,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">เพิ่มรายการลงทุนที่มีอยู่แล้ว</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เพิ่มรายการลงทุนที่มีอยู่แล้ว</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
           <Field label="ชื่อรายการ"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น หุ้น PTT" style={inputStyle} /></Field>
           <Field label="หมวดหมู่">
@@ -2503,7 +2718,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
     return (
       <div className="flex flex-col gap-4">
         <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3 flex items-center gap-2"><Home size={16} color={C.brown} />ตั้งค่าเงินกู้บ้าน</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3 flex items-center gap-2"><Home size={16} color={C.brown} />ตั้งค่าเงินกู้บ้าน</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
             <Field label="ชื่อรายการ"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น สินเชื่อบ้าน ธ.กรุงศรี" style={inputStyle} /></Field>
             <Field label="เงินต้นเริ่มต้น (บาท)"><input type="number" min="0" value={principal} onChange={(e) => setPrincipal(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
@@ -2529,7 +2744,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg flex items-center gap-2"><Home size={18} color={C.brown} />{homeLoan.name}</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg flex items-center gap-2"><Home size={18} color={C.brown} />{homeLoan.name}</p>
         <div className="flex items-center gap-2">
           <button onClick={() => setEditing(true)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><Settings size={14} /></button>
           <button onClick={resetLoan} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><Trash2 size={14} color={C.coral} /></button>
@@ -2547,12 +2762,12 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
 
       <div style={{ background: `linear-gradient(135deg, ${C.brown}, #A85F2C)` }} className="rounded-3xl p-5 text-white shadow-sm">
         <p className="text-xs font-semibold opacity-90 mb-1">{paidOff ? "ผ่อนหมดแล้ว 🎉" : "เงินต้นคงเหลือตอนนี้"}</p>
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(currentRemaining)}</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(currentRemaining)}</p>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <SummaryMini label="งวดที่เหลือ" value={remainingInstallments} sub="งวด" isText />
           <div style={{ background: "rgba(255,255,255,0.18)" }} className="rounded-xl px-3 py-2">
             <p className="opacity-90 font-semibold">คาดว่าจะปิดยอด</p>
-            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-sm">{payoffYm ? monthLabel(payoffYm) : "-"}</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-sm">{payoffYm ? monthLabel(payoffYm) : "-"}</p>
           </div>
           <SummaryMini label="ดอกเบี้ยจ่ายไปแล้ว (ประมาณ)" value={interestPaidSoFar} />
           <SummaryMini label="ดอกเบี้ยที่เหลือ (ประมาณ)" value={interestRemaining} />
@@ -2567,7 +2782,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
       )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">อัตราดอกเบี้ย</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">อัตราดอกเบี้ย</p>
         <div className="flex items-center gap-2 mb-3">
           <div style={{ background: C.brownSoft }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><Percent size={15} color={C.brown} /></div>
           <p className="text-sm font-bold">ปัจจุบัน {currentRate}% ต่อปี</p>
@@ -2577,7 +2792,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
             {[...homeLoan.rateChanges].sort((a, b) => a.ym.localeCompare(b.ym)).map((rc, i) => (
               <div key={i} className="flex items-center gap-2 text-xs" style={{ color: C.inkSoft }}>
                 <span className="flex-1">ตั้งแต่ {monthLabel(rc.ym)}</span>
-                <span style={{ fontFamily: "'Manrope', sans-serif", color: C.ink }} className="font-bold">{rc.rate}%</span>
+                <span style={{ fontFamily: "'Prompt', sans-serif", color: C.ink }} className="font-bold">{rc.rate}%</span>
                 <button onClick={() => removeRateChange(homeLoan.rateChanges.indexOf(rc))} style={{ color: C.gray }} className="p-1"><Trash2 size={12} /></button>
               </div>
             ))}
@@ -2598,10 +2813,10 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold">ตารางผ่อนชำระ</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">ตารางผ่อนชำระ</p>
           <div className="flex items-center gap-2">
             <button onClick={() => setViewYear((y) => y - 1)} style={{ background: C.graySoft, color: C.inkSoft }} className="p-1.5 rounded-full"><ChevronLeft size={14} /></button>
-            <span style={{ fontFamily: "'Manrope', sans-serif" }} className="text-sm font-bold whitespace-nowrap">ปี {viewYear + 543}</span>
+            <span style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold whitespace-nowrap">ปี {viewYear + 543}</span>
             <button onClick={() => setViewYear((y) => y + 1)} style={{ background: C.graySoft, color: C.inkSoft }} className="p-1.5 rounded-full"><ChevronRight size={14} /></button>
             <button onClick={() => setViewYear(new Date().getFullYear())} style={{ background: C.brownSoft, color: C.brown }} className="px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap">ปีนี้</button>
           </div>
@@ -2635,7 +2850,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
                       <td className="text-right px-2 whitespace-nowrap">
                         <input type="number" min="0" defaultValue={r.payment} key={r.ym + "-pay-" + r.payment}
                           onBlur={(e) => updateActualPayment(r.ym, e.target.value)}
-                          style={{ ...inputStyle, width: 90, padding: "4px 8px", fontFamily: "'Manrope', sans-serif", textAlign: "right" }} />
+                          style={{ ...inputStyle, width: 90, padding: "4px 8px", fontFamily: "'Prompt', sans-serif", textAlign: "right" }} />
                       </td>
                       <td className="text-right px-2 whitespace-nowrap">{r.rate}%</td>
                       <td className="text-right px-2 whitespace-nowrap" style={{ color: C.coral }}>{fmtTHB(r.interest)}</td>
@@ -2728,7 +2943,7 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
     <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
       <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 440, width: "100%", maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
-          <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold text-lg">ตั้งค่า</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">ตั้งค่า</p>
           <button onClick={onClose} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
         </div>
         <p className="text-xs mb-4" style={{ color: C.inkSoft }}>หมวดหมู่และบัตรเครดิตที่ตั้งไว้นี้เป็นของบัญชีคุณเท่านั้น ไม่กระทบผู้ใช้คนอื่น</p>
@@ -2798,7 +3013,7 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
       {form && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.55)", zIndex: 410, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setForm(null)}>
           <div style={{ background: C.card, borderRadius: 24, padding: 20, maxWidth: 340, width: "100%", maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
-            <p style={{ fontFamily: "'Manrope', sans-serif" }} className="font-bold mb-3">{form.mode.startsWith("new") ? "เพิ่มรายการ" : "แก้ไขรายการ"}</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">{form.mode.startsWith("new") ? "เพิ่มรายการ" : "แก้ไขรายการ"}</p>
             <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ชื่อ" style={{ ...inputStyle, marginBottom: 14 }} autoFocus />
             <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>ไอคอน</p>
             <div className="grid grid-cols-6 gap-2 mb-4 max-h-32 overflow-y-auto">
