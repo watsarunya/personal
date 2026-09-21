@@ -81,6 +81,25 @@ const DEFAULT_CREDIT_CARDS = [
 function cardMeta(creditCards, name) {
   return creditCards.find((c) => c.name === name) || { name, icon: "CreditCard", color: "#6C5CE7" };
 }
+const DEFAULT_BANKS = [];
+function bankMeta(banks, name) {
+  return banks.find((b) => b.name === name) || { name, icon: "Landmark", color: "#4FB6E8" };
+}
+// A bank's displayed balance = its manually-set anchor + the net effect of
+// every transfer transaction that references it. Only transactions created
+// through the bank picker (i.e. after the bank existed) ever carry a
+// `.bank` field, so older records never retroactively affect this.
+function bankTransferDelta(transactions, bankName) {
+  return transactions.reduce((sum, t) => {
+    if (t.payment === "transfer" && t.bank === bankName) {
+      return sum + (t.type === "income" ? Number(t.amount) : -Number(t.amount));
+    }
+    return sum;
+  }, 0);
+}
+function computeBankBalance(transactions, bankBalances, bankName) {
+  return (bankBalances[bankName] || 0) + bankTransferDelta(transactions, bankName);
+}
 
 function subcategoryMeta(categories, catKey, subKey) {
   const cat = categories.find((c) => c.key === catKey);
@@ -267,6 +286,8 @@ export default function FinanceTracker() {
   });
   const [expenseCategories, setExpenseCategories] = useState(DEFAULT_EXPENSE_CATEGORIES);
   const [creditCards, setCreditCards] = useState(DEFAULT_CREDIT_CARDS);
+  const [banks, setBanks] = useState(DEFAULT_BANKS);
+  const [bankBalances, setBankBalances] = useState({});
   const [cardSettings, setCardSettings] = useState(
     Object.fromEntries(DEFAULT_CREDIT_CARDS.map((c) => [c.name, { cutoffDay: 25, dueDay: 5 }]))
   );
@@ -277,6 +298,12 @@ export default function FinanceTracker() {
     payment: 0, dueDay: 5, rateChanges: [], paidMonths: {},
   });
   const [dismissedAlerts, setDismissedAlerts] = useState({});
+  // A plain delete only removes an item from this device's array; the
+  // merge-on-save logic unions with whatever another device still has, so a
+  // deleted id can silently come back. Tombstoning the id itself (and
+  // filtering it out everywhere debts are loaded/merged) is what makes a
+  // delete actually stick across devices.
+  const [deletedDebtIds, setDeletedDebtIds] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [activeProfileId, setActiveProfileId] = useState(null);
   const [showProfilePicker, setShowProfilePicker] = useState(false);
@@ -295,7 +322,9 @@ export default function FinanceTracker() {
         const keptTransactions = (data.transactions || []).filter((t) => t.date >= cutoff);
         setTransactions(keptTransactions);
         setSavings(data.savings || []);
-        setDebts(data.debts || []);
+        const tombstones = data.deletedDebtIds || [];
+        setDeletedDebtIds(tombstones);
+        setDebts((data.debts || []).filter((d) => !tombstones.includes(d.id)));
         setBudgets(data.budgets || {});
         setPlanIncomeItems(data.planIncomeItems || []);
         setPlanFixCostItems(data.planFixCostItems || []);
@@ -320,6 +349,8 @@ export default function FinanceTracker() {
         setProfiles(data.profiles || []);
         if (data.expenseCategories) setExpenseCategories(data.expenseCategories);
         if (data.creditCards) setCreditCards(data.creditCards.map((c) => typeof c === "string" ? { name: c, icon: "CreditCard", color: "#6C5CE7" } : c));
+        if (data.banks) setBanks(data.banks);
+        if (data.bankBalances) setBankBalances(data.bankBalances);
       }
     } catch (e) { /* fresh start / offline */ }
   }
@@ -352,7 +383,7 @@ export default function FinanceTracker() {
     const t = setTimeout(async () => {
       const localBlob = {
         transactions, savings, debts, budgets,
-        planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards,
+        planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards, deletedDebtIds, banks, bankBalances,
       };
       try {
         // Read the latest remote data first and merge it with what we're
@@ -360,10 +391,11 @@ export default function FinanceTracker() {
         // that another device already added (e.g. while this tab was open).
         const res = await window.storage.get(STORAGE_KEY);
         const remote = res && res.value ? JSON.parse(res.value) : {};
+        const mergedDeletedDebtIds = Array.from(new Set([...(deletedDebtIds || []), ...((remote.deletedDebtIds) || [])]));
         const merged = {
           transactions: mergeArraysById(transactions, remote.transactions).filter((t) => t.date >= retentionCutoffStr()),
           savings: mergeArraysById(savings, remote.savings),
-          debts: mergeArraysById(debts, remote.debts),
+          debts: mergeArraysById(debts, remote.debts).filter((d) => !mergedDeletedDebtIds.includes(d.id)),
           budgets: mergeMaps(budgets, remote.budgets),
           planIncomeItems: mergeArraysById(planIncomeItems, remote.planIncomeItems),
           planFixCostItems: mergeArraysById(planFixCostItems, remote.planFixCostItems),
@@ -377,6 +409,9 @@ export default function FinanceTracker() {
           profiles,
           expenseCategories: mergeArraysById(expenseCategories, remote.expenseCategories, "key"),
           creditCards: mergeArraysById(creditCards, remote.creditCards, "name"),
+          deletedDebtIds: mergedDeletedDebtIds,
+          banks: mergeArraysById(banks, remote.banks, "name"),
+          bankBalances: mergeMaps(bankBalances, remote.bankBalances),
         };
         await window.storage.set(STORAGE_KEY, JSON.stringify(merged));
         // Reflect anything merged in from another device back into this
@@ -390,6 +425,9 @@ export default function FinanceTracker() {
         if (merged.investPlan.items.length !== investPlan.items.length) setInvestPlan((p) => ({ ...p, items: merged.investPlan.items }));
         if (Object.keys(merged.budgets).length !== Object.keys(budgets).length) setBudgets(merged.budgets);
         if (Object.keys(merged.cardSettings).length !== Object.keys(cardSettings).length) setCardSettings(merged.cardSettings);
+        if (merged.deletedDebtIds.length !== (deletedDebtIds || []).length) setDeletedDebtIds(merged.deletedDebtIds);
+        if (merged.banks.length !== banks.length) setBanks(merged.banks);
+        if (Object.keys(merged.bankBalances).length !== Object.keys(bankBalances).length) setBankBalances(merged.bankBalances);
       } catch (e) {
         // Offline or request failed — fall back to a plain save of local
         // state so nothing is lost locally; it'll merge properly next time.
@@ -397,7 +435,7 @@ export default function FinanceTracker() {
       }
     }, 250);
     return () => clearTimeout(t);
-  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards]);
+  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards, deletedDebtIds, banks, bankBalances]);
 
   // Sync the home loan installment into Monthly Plan's Fix Cost list automatically
   useEffect(() => {
@@ -588,13 +626,13 @@ export default function FinanceTracker() {
           <Overview transactions={transactions} alerts={visibleAlerts} onDismissAlert={dismissAlert} setTab={setTab} expenseCategories={expenseCategories} />
         )}
         {tab === "transactions" && (
-          <TransactionsTab transactions={transactions} setTransactions={setTransactions} budgets={budgets} setTab={setTab} expenseCategories={expenseCategories} creditCards={creditCards} />
+          <TransactionsTab transactions={transactions} setTransactions={setTransactions} budgets={budgets} setTab={setTab} expenseCategories={expenseCategories} creditCards={creditCards} banks={banks} />
         )}
         {tab === "savings" && (
-          <SavingsTab savings={savings} setSavings={setSavings} investPlan={investPlan} setInvestPlan={setInvestPlan} holdings={holdings} setHoldings={setHoldings} />
+          <SavingsTab savings={savings} setSavings={setSavings} investPlan={investPlan} setInvestPlan={setInvestPlan} holdings={holdings} setHoldings={setHoldings} banks={banks} bankBalances={bankBalances} setBankBalances={setBankBalances} transactions={transactions} />
         )}
         {tab === "debts" && (
-          <DebtsTab debts={debts} setDebts={setDebts} creditCards={creditCards} setTransactions={setTransactions} />
+          <DebtsTab debts={debts} setDebts={setDebts} creditCards={creditCards} setTransactions={setTransactions} setDeletedDebtIds={setDeletedDebtIds} />
         )}
         {tab === "budgets" && (
           <BudgetsTab budgets={budgets} setBudgets={setBudgets} monthSpend={monthSpend} expenseCategories={expenseCategories} />
@@ -627,6 +665,8 @@ export default function FinanceTracker() {
           expenseCategories={expenseCategories} setExpenseCategories={setExpenseCategories}
           creditCards={creditCards} setCreditCards={setCreditCards}
           cardSettings={cardSettings} setCardSettings={setCardSettings}
+          banks={banks} setBanks={setBanks} bankBalances={bankBalances} setBankBalances={setBankBalances}
+          transactions={transactions} debts={debts}
           setTransactions={setTransactions} setDebts={setDebts}
           onClose={() => setShowSettingsPage(false)}
         />
@@ -1099,7 +1139,7 @@ function DateRangePicker({ from, to, onChange }) {
 }
 
 /* ---------------------------------------------------------------- */
-function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, expenseCategories, creditCards }) {
+function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, expenseCategories, creditCards, banks = [] }) {
   const [editingId, setEditingId] = useState(null);
   const [type, setType] = useState("expense");
   const [amount, setAmount] = useState("");
@@ -1107,6 +1147,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
   const [subcategory, setSubcategory] = useState(null);
   const [payment, setPayment] = useState(null);
   const [card, setCard] = useState(null);
+  const [bank, setBank] = useState(null);
   const [date, setDate] = useState(todayStr());
   const [note, setNote] = useState("");
   const [filter, setFilter] = useState("all");
@@ -1123,6 +1164,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
   const [budgetAlert, setBudgetAlert] = useState(null);
   const [showSubcatModal, setShowSubcatModal] = useState(false);
   const [showCardModal, setShowCardModal] = useState(false);
+  const [showBankModal, setShowBankModal] = useState(false);
 
   const categories = type === "expense" ? expenseCategories : INCOME_CATEGORIES;
   const activeSubcats = type === "expense" && category ? catMeta(expenseCategories, category)?.subcategories : null;
@@ -1136,6 +1178,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
   function pickPayment(k) {
     setPayment(k); setPayError(false);
     if (k === "credit") { setCard(null); setShowCardModal(true); }
+    else if (k === "transfer" && banks.length > 0) { setBank(null); setShowBankModal(true); }
   }
   function showToast(msg) {
     setToast(msg);
@@ -1143,11 +1186,11 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
   }
   function resetForm() {
     setEditingId(null); setType("expense"); setAmount(""); setCategory(null); setSubcategory(null); setCatError(false);
-    setPayment(null); setPayError(false); setCard(null); setCardError(false); setDate(todayStr()); setNote("");
+    setPayment(null); setPayError(false); setCard(null); setCardError(false); setBank(null); setDate(todayStr()); setNote("");
   }
   function startEdit(t) {
     setEditingId(t.id); setType(t.type); setAmount(String(t.amount)); setCategory(t.category); setSubcategory(t.subcategory || null);
-    setPayment(t.payment); setCard(t.card || null); setDate(t.date); setNote(t.note || "");
+    setPayment(t.payment); setCard(t.card || null); setBank(t.bank || null); setDate(t.date); setNote(t.note || "");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
   function save() {
@@ -1171,10 +1214,10 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
     }
     if (editingId) {
       setTransactions((prev) => prev.map((t) => t.id === editingId
-        ? { ...t, type, amount: amt, category, subcategory: type === "expense" ? subcategory : null, date, payment, card: payment === "credit" ? card : null, note: note.trim() }
+        ? { ...t, type, amount: amt, category, subcategory: type === "expense" ? subcategory : null, date, payment, card: payment === "credit" ? card : null, bank: payment === "transfer" ? bank : null, note: note.trim() }
         : t));
     } else {
-      setTransactions((prev) => [{ id: uid(), type, amount: amt, category, subcategory: type === "expense" ? subcategory : null, date, payment, card: payment === "credit" ? card : null, note: note.trim() }, ...prev]);
+      setTransactions((prev) => [{ id: uid(), type, amount: amt, category, subcategory: type === "expense" ? subcategory : null, date, payment, card: payment === "credit" ? card : null, bank: payment === "transfer" ? bank : null, note: note.trim() }, ...prev]);
     }
     showToast(wasEditing ? "แก้ไขรายการสำเร็จ ✓" : "บันทึกรายการสำเร็จ ✓");
     resetForm();
@@ -1187,6 +1230,8 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
   if (categoryFilter.length > 0) visible = visible.filter((t) => categoryFilter.includes(resolveMainCategory(expenseCategories, t.category)));
   if (dateFrom) visible = visible.filter((t) => t.date >= dateFrom);
   if (dateTo) visible = visible.filter((t) => t.date <= dateTo);
+  const visibleIncome = visible.filter((t) => t.type === "income").reduce((a, t) => a + Number(t.amount), 0);
+  const visibleExpense = visible.filter((t) => t.type === "expense").reduce((a, t) => a + Number(t.amount), 0);
 
   return (
     <div className="flex flex-col gap-4">
@@ -1271,6 +1316,36 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
           </div>
         </div>
       )}
+      {showBankModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowBankModal(false)}>
+          <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">เลือกธนาคาร</p>
+              <button onClick={() => setShowBankModal(false)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
+            </div>
+            <div className="grid grid-cols-3 gap-y-4 gap-x-1">
+              <button onClick={() => { setBank(null); setShowBankModal(false); }} className="flex flex-col items-center gap-1.5">
+                <div style={{ background: !bank ? C.purple : "#fff", border: `1.5px solid ${C.purple}` }} className="w-14 h-14 rounded-full flex items-center justify-center shadow-sm">
+                  <MoreHorizontal size={19} color={!bank ? "#fff" : C.purple} />
+                </div>
+                <span style={{ color: !bank ? C.purple : C.inkSoft }} className="text-[11px] font-bold">ไม่ระบุ</span>
+              </button>
+              {banks.map((b) => {
+                const active = bank === b.name;
+                const BankIcon = resolveIcon(b.icon);
+                return (
+                  <button key={b.name} onClick={() => { setBank(b.name); setShowBankModal(false); }} className="flex flex-col items-center gap-1.5">
+                    <div style={{ background: active ? b.color : "#fff", border: `1.5px solid ${b.color}` }} className="w-14 h-14 rounded-full flex items-center justify-center shadow-sm">
+                      <BankIcon size={19} color={active ? "#fff" : b.color} />
+                    </div>
+                    <span style={{ color: active ? b.color : C.inkSoft }} className="text-[11px] font-bold text-center leading-tight">{b.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ background: C.card, border: editingId ? `2px solid ${C.purple}` : "none" }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">{editingId ? "แก้ไขรายการ" : "บันทึกรายการใหม่"}</p>
@@ -1343,6 +1418,15 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
             </div>
           )}
           {cardError && <p className="text-xs font-semibold mt-2 text-center" style={{ color: C.coral }}>กรุณาเลือกบัตรเครดิต</p>}
+          {payment === "transfer" && banks.length > 0 && (
+            <div className="flex justify-center mt-3">
+              <button onClick={() => setShowBankModal(true)} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs font-bold">
+                <Landmark size={14} />
+                <span>{bank ? `ธนาคาร: ${bank}` : "เลือกธนาคาร (ไม่บังคับ)"}</span>
+                <Pencil size={12} />
+              </button>
+            </div>
+          )}
         </Field>
 
         <div className="h-3" />
@@ -1391,6 +1475,21 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
             <button onClick={() => { setCategoryFilter([]); setDateFrom(defaultDateFrom); setDateTo(defaultDateTo); }} style={{ color: C.coral }} className="text-xs font-bold">ล้างตัวกรอง</button>
           </div>
         )}
+        {visible.length > 0 && (
+          <div style={{ background: C.bg }} className="flex items-center gap-3 rounded-2xl px-4 py-3 mb-3">
+            <p className="text-xs font-bold" style={{ color: C.inkSoft }}>{visible.length} รายการ</p>
+            <div style={{ background: C.graySoft, width: 1, alignSelf: "stretch" }} />
+            {filter !== "expense" && (
+              <p className="text-xs font-bold" style={{ color: C.teal, fontFamily: "'Prompt', sans-serif" }}>รายรับ {fmtTHB(visibleIncome)}</p>
+            )}
+            {filter !== "income" && (
+              <p className="text-xs font-bold" style={{ color: C.coral, fontFamily: "'Prompt', sans-serif" }}>รายจ่าย {fmtTHB(visibleExpense)}</p>
+            )}
+            {filter === "all" && (
+              <p className="text-xs font-bold ml-auto" style={{ color: C.ink, fontFamily: "'Prompt', sans-serif" }}>สุทธิ {fmtTHB(visibleIncome - visibleExpense)}</p>
+            )}
+          </div>
+        )}
         {visible.length === 0 ? <EmptyNote text="ยังไม่มีรายการ — เริ่มบันทึกรายการแรกของคุณด้านบน" /> : (
           <div className="flex flex-col gap-2">
             {visible.map((t) => {
@@ -1407,7 +1506,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
                     <p className="text-sm font-bold truncate">{meta.label}{subMeta ? ` · ${subMeta.label}` : ""}{t.note ? ` · ${t.note}` : ""}</p>
                     <p className="text-xs flex items-center gap-1.5 flex-wrap" style={{ color: C.inkSoft }}>
                       <span>{thDate(t.date)}</span><span>·</span>
-                      <span>{t.payment === "cash" ? "เงินสด" : t.payment === "transfer" ? "โอนเงิน" : `บัตร (${t.card})`}</span>
+                      <span>{t.payment === "cash" ? "เงินสด" : t.payment === "transfer" ? (t.bank ? `โอนเงิน (${t.bank})` : "โอนเงิน") : `บัตร (${t.card})`}</span>
                     </p>
                   </div>
                   <p style={{ fontFamily: "'Prompt', sans-serif", color: t.type === "expense" ? C.coral : C.teal }} className="text-sm font-bold whitespace-nowrap">
@@ -1435,7 +1534,7 @@ const inputStyle = {
 };
 
 /* ---------------------------------------------------------------- */
-function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, setHoldings }) {
+function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, setHoldings, banks, bankBalances, setBankBalances, transactions }) {
   const [subTab, setSubTab] = useState("log");
   const [kind, setKind] = useState("saving");
   const [name, setName] = useState("");
@@ -1471,9 +1570,51 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
 
       <div className="flex rounded-full overflow-hidden p-1 w-fit" style={{ background: C.graySoft }}>
         <button onClick={() => setSubTab("log")} style={{ background: subTab === "log" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full shadow-sm">Transactions</button>
+        <button onClick={() => setSubTab("banks")} style={{ background: subTab === "banks" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><Landmark size={13} />ธนาคาร</button>
         <button onClick={() => setSubTab("plan")} style={{ background: subTab === "plan" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><PieChartIcon size={13} />Investment Plan</button>
         <button onClick={() => setSubTab("holdings")} style={{ background: subTab === "holdings" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><Rocket size={13} />Portfolio</button>
       </div>
+
+      {subTab === "banks" && (
+        <div className="flex flex-col gap-3">
+          <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-4 text-white shadow-sm">
+            <p className="text-xs mb-1" style={{ color: "rgba(255,255,255,0.75)" }}>ยอดรวมทุกธนาคาร</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-xl">{fmtTHB(banks.reduce((a, b) => a + computeBankBalance(transactions, bankBalances, b.name), 0))}</p>
+          </div>
+          {banks.length === 0 ? (
+            <EmptyNote text='ยังไม่มีธนาคาร — ไปเพิ่มได้ที่หน้าตั้งค่า (⚙️ มุมขวาบน) แท็บ "ธนาคาร"' />
+          ) : (
+            <div className="flex flex-col gap-2">
+              {banks.map((b) => {
+                const BankIcon = resolveIcon(b.icon);
+                const balance = computeBankBalance(transactions, bankBalances, b.name);
+                return (
+                  <div key={b.name} style={{ background: C.card }} className="flex items-center gap-3 rounded-2xl p-3.5 shadow-sm">
+                    <div style={{ background: b.color }} className="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0"><BankIcon size={18} color="#fff" /></div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold truncate">{b.name}</p>
+                      <p className="text-[11px]" style={{ color: C.inkSoft }}>ยอดคงเหลือปัจจุบัน</p>
+                    </div>
+                    <input
+                      type="number"
+                      defaultValue={balance}
+                      key={b.name + "-" + balance}
+                      onBlur={(e) => {
+                        const typed = parseFloat(e.target.value);
+                        if (isNaN(typed)) return;
+                        const delta = bankTransferDelta(transactions, b.name);
+                        setBankBalances((prev) => ({ ...prev, [b.name]: typed - delta }));
+                      }}
+                      style={{ ...inputStyle, width: 130, padding: "8px 10px", fontFamily: "'Prompt', sans-serif", fontWeight: 700, textAlign: "right" }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <p className="text-[11px]" style={{ color: C.inkSoft }}>แก้ยอดตรงๆ ในช่องได้ตลอด (เช่นตอนเทียบกับยอดจริงในแอปธนาคาร) รายการโอนเงินใหม่ที่บันทึกในหน้ารายรับ-จ่ายจะบวก/ลบยอดนี้ให้อัตโนมัติ ส่วนรายการเก่าก่อนเพิ่มธนาคารจะไม่ถูกนับย้อนหลัง</p>
+        </div>
+      )}
 
       {subTab === "log" && (
       <>
@@ -1539,7 +1680,7 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
 }
 
 /* ---------------------------------------------------------------- */
-function DebtsTab({ debts, setDebts, creditCards, setTransactions }) {
+function DebtsTab({ debts, setDebts, creditCards, setTransactions, setDeletedDebtIds }) {
   const [debtType, setDebtType] = useState("other");
   const [selectedCard, setSelectedCard] = useState(creditCards[0]?.name || "");
   const [name, setName] = useState("");
@@ -1566,6 +1707,10 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions }) {
         // so the sync effect leaves it alone and it stays hidden.
         return prev.map((d) => (d.id === id ? { ...d, dismissed: true } : d));
       }
+      // A plain local delete can get resurrected by the cross-device merge
+      // (which unions with whatever another device/tab still has). Record
+      // the id as deleted so the merge permanently excludes it everywhere.
+      setDeletedDebtIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
       return prev.filter((d) => d.id !== id);
     });
   }
@@ -1603,29 +1748,43 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions }) {
   const sorted = [...debts].filter((d) => !d.dismissed).sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1));
 
   const now = new Date();
-  const thisYm = ymOf(now);
-  const nextYm = ymOf(new Date(now.getFullYear(), now.getMonth() + 1, 1));
   const summarize = (ym) => {
     const items = debts.filter((d) => !d.paid && !d.dismissed && d.dueDate.slice(0, 7) === ym);
     return { total: items.reduce((a, d) => a + Number(d.amount), 0), count: items.length };
   };
-  const thisMonthSummary = summarize(thisYm);
-  const nextMonthSummary = summarize(nextYm);
+  // Show the soonest months that actually have something owed — a month
+  // with everything already paid/dismissed (like a September that's fully
+  // settled) is skipped entirely rather than showing a zero card for it.
+  const upcomingYms = Array.from(new Set(
+    debts.filter((d) => !d.paid && !d.dismissed).map((d) => d.dueDate.slice(0, 7))
+  )).sort().slice(0, 2);
+  const upcomingSummaries = upcomingYms.map((ym) => {
+    const [y, m] = ym.split("-").map(Number);
+    return { ym, name: MONTH_FULL_TH[m - 1], year: y, ...summarize(ym) };
+  });
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-2 gap-3">
-        <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-4 text-white">
-          <p className="text-xs mb-1.5" style={{ color: "rgba(255,255,255,0.75)" }}>ต้องชำระเดือนนี้</p>
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-xl mb-1">{fmtTHB(thisMonthSummary.total)}</p>
-          <p className="text-[11px]" style={{ color: "rgba(255,255,255,0.75)" }}>{thisMonthSummary.count} รายการ</p>
+      {upcomingSummaries.length === 0 ? (
+        <div style={{ background: C.tealSoft }} className="rounded-3xl p-4 text-center">
+          <p className="text-sm font-bold" style={{ color: C.teal }}>ไม่มียอดที่ต้องชำระตอนนี้ 🎉</p>
         </div>
-        <div style={{ background: C.card, border: `1.5px solid ${C.graySoft}` }} className="rounded-3xl p-4">
-          <p className="text-xs mb-1.5" style={{ color: C.inkSoft }}>ต้องชำระเดือนหน้า</p>
-          <p style={{ fontFamily: "'Prompt', sans-serif", color: C.ink }} className="text-xl mb-1">{fmtTHB(nextMonthSummary.total)}</p>
-          <p className="text-[11px]" style={{ color: C.inkSoft }}>{nextMonthSummary.count} รายการ</p>
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          {upcomingSummaries.map((s, i) => (
+            <div key={s.ym} style={i === 0 ? { background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` } : { background: C.card, border: `1.5px solid ${C.graySoft}` }} className="rounded-3xl p-4" >
+              <p className="text-xs mb-1.5" style={{ color: i === 0 ? "rgba(255,255,255,0.75)" : C.inkSoft }}>ยอดชำระเดือน{s.name}{s.year !== now.getFullYear() ? ` ${s.year + 543}` : ""}</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif", color: i === 0 ? "#fff" : C.ink }} className="text-xl mb-1">{fmtTHB(s.total)}</p>
+              <p className="text-[11px]" style={{ color: i === 0 ? "rgba(255,255,255,0.75)" : C.inkSoft }}>{s.count} รายการ</p>
+            </div>
+          ))}
+          {upcomingSummaries.length === 1 && (
+            <div style={{ background: C.tealSoft }} className="rounded-3xl p-4 flex items-center justify-center">
+              <p className="text-xs font-bold text-center" style={{ color: C.teal }}>ไม่มียอดค้างชำระเดือนถัดไป</p>
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เพิ่มรายการหนี้สิน / กำหนดชำระ</p>
@@ -2050,6 +2209,7 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
 /*  Investment Plan (portfolio allocation + scheduled reminders)     */
 /* ---------------------------------------------------------------- */
 const MONTH_ABBR_TH = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+const MONTH_FULL_TH = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"];
 
 function nextMonthlyDate(day) {
   const now = new Date();
@@ -2890,10 +3050,26 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
 /*  Settings — user-editable categories, subcategories, credit cards */
 /*  (per-account, since storage is already isolated per user)        */
 /* ---------------------------------------------------------------- */
-function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, setCreditCards, cardSettings, setCardSettings, setTransactions, setDebts, onClose }) {
+function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, setCreditCards, cardSettings, setCardSettings, banks, setBanks, bankBalances, setBankBalances, transactions, debts, setTransactions, setDebts, onClose }) {
   const [section, setSection] = useState("categories");
   const [expandedCat, setExpandedCat] = useState(null);
   const [form, setForm] = useState(null);
+  const [mergeTarget, setMergeTarget] = useState(creditCards[0]?.name || "");
+  const [bankMergeTarget, setBankMergeTarget] = useState(banks[0]?.name || "");
+
+  const orphanedCardNames = useMemo(() => {
+    const validNames = new Set(creditCards.map((c) => c.name));
+    const counts = new Map();
+    transactions.forEach((t) => { if (t.card && !validNames.has(t.card)) counts.set(t.card, (counts.get(t.card) || 0) + 1); });
+    debts.forEach((d) => { if (d.card && !validNames.has(d.card) && !counts.has(d.card)) counts.set(d.card, 0); });
+    return Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
+  }, [transactions, debts, creditCards]);
+  const orphanedBankNames = useMemo(() => {
+    const validNames = new Set(banks.map((b) => b.name));
+    const counts = new Map();
+    transactions.forEach((t) => { if (t.bank && !validNames.has(t.bank)) counts.set(t.bank, (counts.get(t.bank) || 0) + 1); });
+    return Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
+  }, [transactions, banks]);
 
   function openNewCategoryForm() {
     setForm({ mode: "newCat", name: "", icon: "Tag", color: CATEGORY_COLOR_PALETTE[expenseCategories.length % CATEGORY_COLOR_PALETTE.length] });
@@ -2915,6 +3091,12 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
     const cs = cardSettings[cd.name] || { cutoffDay: 25, dueDay: 5 };
     setForm({ mode: "editCard", oldName: cd.name, name: cd.name, icon: cd.icon, color: cd.color, cutoffDay: cs.cutoffDay, dueDay: cs.dueDay, mergeFrom: "" });
   }
+  function openNewBankForm() {
+    setForm({ mode: "newBank", name: "", icon: "Landmark", color: CATEGORY_COLOR_PALETTE[banks.length % CATEGORY_COLOR_PALETTE.length] });
+  }
+  function openEditBankForm(b) {
+    setForm({ mode: "editBank", oldName: b.name, name: b.name, icon: b.icon, color: b.color, mergeFrom: "" });
+  }
   function mergeStaleName(currentName, staleName) {
     const from = staleName.trim();
     if (!from || from === currentName) return;
@@ -2927,6 +3109,21 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
       return renamed;
     }));
     setCardSettings((prev) => { const next = { ...prev }; delete next[from]; return next; });
+  }
+  function mergeStaleBankName(currentName, staleName) {
+    const from = staleName.trim();
+    if (!from || from === currentName) return;
+    // Reassign the transactions so their delta counts toward the current
+    // bank going forward (computeBankBalance recomputes this automatically),
+    // and fold the stale name's manually-set anchor into the current one.
+    setTransactions((prev) => prev.map((t) => (t.bank === from ? { ...t, bank: currentName } : t)));
+    setBankBalances((prev) => {
+      const next = { ...prev };
+      const oldAnchor = next[from] || 0;
+      delete next[from];
+      next[currentName] = (next[currentName] || 0) + oldAnchor;
+      return next;
+    });
   }
   function saveForm() {
     if (!form.name.trim()) return;
@@ -2969,6 +3166,18 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
           mergeStaleName(nm, form.mergeFrom);
         }
       }
+    } else if (form.mode === "newBank") {
+      const nm = form.name.trim();
+      if (!banks.some((b) => b.name === nm)) {
+        setBanks((prev) => [...prev, { name: nm, icon: form.icon, color: form.color }]);
+      }
+    } else if (form.mode === "editBank") {
+      const nm = form.name.trim();
+      if (nm === form.oldName || !banks.some((b) => b.name === nm)) {
+        setBanks((prev) => prev.map((b) => (b.name === form.oldName ? { name: nm, icon: form.icon, color: form.color } : b)));
+        if (nm !== form.oldName) mergeStaleBankName(nm, form.oldName);
+        if (form.mergeFrom && form.mergeFrom.trim()) mergeStaleBankName(nm, form.mergeFrom);
+      }
     }
     setForm(null);
   }
@@ -2978,6 +3187,10 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
   }
   function deleteSub(catKey, subKey) {
     setExpenseCategories((prev) => prev.map((c) => (c.key === catKey ? { ...c, subcategories: (c.subcategories || []).filter((s) => s.key !== subKey) } : c)));
+  }
+  function deleteBank(name) {
+    setBanks((prev) => prev.filter((b) => b.name !== name));
+    setBankBalances((prev) => { const next = { ...prev }; delete next[name]; return next; });
   }
   function deleteCard(name) {
     if (creditCards.length <= 1) return;
@@ -2997,6 +3210,7 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
         <div className="flex rounded-full overflow-hidden p-1 mb-4 w-fit" style={{ background: C.graySoft }}>
           <button onClick={() => setSection("categories")} style={{ background: section === "categories" ? C.purple : "transparent", color: section === "categories" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">หมวดหมู่</button>
           <button onClick={() => setSection("cards")} style={{ background: section === "cards" ? C.purple : "transparent", color: section === "cards" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">บัตรเครดิต</button>
+          <button onClick={() => setSection("banks")} style={{ background: section === "banks" ? C.purple : "transparent", color: section === "banks" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">ธนาคาร</button>
         </div>
 
         {section === "categories" && (
@@ -3039,6 +3253,21 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
 
         {section === "cards" && (
           <div className="flex flex-col gap-2">
+            {orphanedCardNames.length > 0 && (
+              <div style={{ background: C.yellowSoft }} className="rounded-2xl p-3 mb-1">
+                <p className="text-xs font-bold mb-1" style={{ color: "#7A5B00" }}>พบชื่อบัตรที่ไม่ตรงกับรายการปัจจุบัน</p>
+                <p className="text-[11px] mb-2.5" style={{ color: "#7A5B00" }}>อาจเกิดจากเคยเปลี่ยนชื่อบัตรมาก่อน ทำให้มีรายการซ้ำ — กดรวมเข้ากับบัตรปัจจุบันได้เลย</p>
+                {orphanedCardNames.map((o) => (
+                  <div key={o.name} className="flex items-center gap-2 mb-1.5 last:mb-0">
+                    <span className="text-xs font-bold flex-1 truncate">"{o.name}"{o.count > 0 ? ` (${o.count} รายการ)` : ""}</span>
+                    <select value={mergeTarget} onChange={(e) => setMergeTarget(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 8px", fontSize: 11 }}>
+                      {creditCards.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+                    </select>
+                    <button onClick={() => mergeStaleName(mergeTarget, o.name)} style={{ background: C.purple, color: "#fff" }} className="px-2.5 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap">รวมเลย</button>
+                  </div>
+                ))}
+              </div>
+            )}
             {creditCards.map((cd) => {
               const CardIcon = resolveIcon(cd.icon);
               const cs = cardSettings[cd.name] || { cutoffDay: 25, dueDay: 5 };
@@ -3056,6 +3285,43 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
             })}
             <button onClick={openNewCardForm} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-sm font-bold"><Plus size={15} />เพิ่มบัตรเครดิต</button>
             <p className="text-[11px] mt-1" style={{ color: C.inkSoft }}>เลือกไอคอน+สีเป็นสัญลักษณ์แทนได้ (ไม่ใช่โลโก้จริงของธนาคาร) กำหนดวันตัดยอด/ครบกำหนดชำระของแต่ละบัตรได้ตอนเพิ่มหรือแก้ไขบัตร</p>
+          </div>
+        )}
+        {section === "banks" && (
+          <div className="flex flex-col gap-2">
+            {orphanedBankNames.length > 0 && (
+              <div style={{ background: C.yellowSoft }} className="rounded-2xl p-3 mb-1">
+                <p className="text-xs font-bold mb-1" style={{ color: "#7A5B00" }}>พบชื่อธนาคารที่ไม่ตรงกับรายการปัจจุบัน</p>
+                <p className="text-[11px] mb-2.5" style={{ color: "#7A5B00" }}>อาจเกิดจากเคยเปลี่ยนชื่อธนาคารมาก่อน — กดรวมเข้ากับธนาคารปัจจุบันได้เลย</p>
+                {orphanedBankNames.map((o) => (
+                  <div key={o.name} className="flex items-center gap-2 mb-1.5 last:mb-0">
+                    <span className="text-xs font-bold flex-1 truncate">"{o.name}"{o.count > 0 ? ` (${o.count} รายการ)` : ""}</span>
+                    <select value={bankMergeTarget} onChange={(e) => setBankMergeTarget(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 8px", fontSize: 11 }}>
+                      {banks.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
+                    </select>
+                    <button onClick={() => mergeStaleBankName(bankMergeTarget, o.name)} style={{ background: C.purple, color: "#fff" }} className="px-2.5 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap">รวมเลย</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {banks.length === 0 && <EmptyNote text="ยังไม่มีธนาคาร — เพิ่มเพื่อเริ่มบันทึกยอดคงเหลือและเลือกตอนโอนเงินได้" />}
+            {banks.map((b) => {
+              const BankIcon = resolveIcon(b.icon);
+              const balance = computeBankBalance(transactions, bankBalances, b.name);
+              return (
+                <div key={b.name} style={{ background: C.bg }} className="flex items-center gap-2.5 rounded-2xl p-3">
+                  <div style={{ background: b.color }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><BankIcon size={15} color="#fff" /></div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold truncate">{b.name}</p>
+                    <p className="text-[11px]" style={{ color: C.inkSoft }}>ยอดคงเหลือ {fmtTHB(balance)}</p>
+                  </div>
+                  <button onClick={() => openEditBankForm(b)} style={{ color: C.purple }} className="p-1"><Pencil size={14} /></button>
+                  <button onClick={() => deleteBank(b.name)} style={{ color: C.gray }} className="p-1"><Trash2 size={14} /></button>
+                </div>
+              );
+            })}
+            <button onClick={openNewBankForm} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-sm font-bold"><Plus size={15} />เพิ่มธนาคาร</button>
+            <p className="text-[11px] mt-1" style={{ color: C.inkSoft }}>ตั้งยอดคงเหลือเริ่มต้นได้ที่หน้า "ออม & ลงทุน" รายการโอนเงินใหม่หลังจากนี้จะตัด/บวกยอดให้อัตโนมัติ รายการเก่าก่อนเพิ่มธนาคารจะไม่ถูกนับย้อนหลัง</p>
           </div>
         )}
       </div>
@@ -3099,6 +3365,13 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
               <details className="mb-5">
                 <summary className="text-xs font-bold cursor-pointer" style={{ color: C.inkSoft }}>ขั้นสูง: รวมรายการเก่าที่ค้างจากชื่อบัตรอื่น</summary>
                 <p className="text-[11px] mt-1.5 mb-2" style={{ color: C.inkSoft }}>ถ้าเคยเปลี่ยนชื่อบัตรใบนี้มาก่อน แล้วยังเห็นรายการซ้ำในหน้า Debts ที่ใช้ชื่อเดิม พิมพ์ชื่อเดิมตรงนี้เพื่อรวมเข้าด้วยกัน</p>
+                <input value={form.mergeFrom} onChange={(e) => setForm({ ...form, mergeFrom: e.target.value })} placeholder="ชื่อเดิมที่ต้องการรวมเข้ามา" style={inputStyle} />
+              </details>
+            )}
+            {form.mode === "editBank" && (
+              <details className="mb-5">
+                <summary className="text-xs font-bold cursor-pointer" style={{ color: C.inkSoft }}>ขั้นสูง: รวมรายการเก่าที่ค้างจากชื่อธนาคารอื่น</summary>
+                <p className="text-[11px] mt-1.5 mb-2" style={{ color: C.inkSoft }}>ถ้าเคยเปลี่ยนชื่อธนาคารนี้มาก่อน พิมพ์ชื่อเดิมตรงนี้เพื่อรวมยอด/รายการเข้าด้วยกัน</p>
                 <input value={form.mergeFrom} onChange={(e) => setForm({ ...form, mergeFrom: e.target.value })} placeholder="ชื่อเดิมที่ต้องการรวมเข้ามา" style={inputStyle} />
               </details>
             )}
