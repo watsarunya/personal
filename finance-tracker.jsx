@@ -462,12 +462,15 @@ export default function FinanceTracker() {
         if (idx === -1) {
           next.push({ id, name: label, amount: amt, dueDate: dueDateStr, recurring: false, paid: false, auto: true, card });
           changed = true;
-        } else if (!next[idx].paid && !next[idx].amountOverridden && (next[idx].amount !== amt || next[idx].dueDate !== dueDateStr)) {
-          next[idx] = { ...next[idx], amount: amt, dueDate: dueDateStr, name: label };
-          changed = true;
-        } else if (!next[idx].paid && next[idx].amountOverridden && next[idx].name !== label) {
-          next[idx] = { ...next[idx], name: label };
-          changed = true;
+        } else if (!next[idx].paid) {
+          const updates = {};
+          if (!next[idx].amountOverridden && next[idx].amount !== amt) updates.amount = amt;
+          if (next[idx].dueDate !== dueDateStr) updates.dueDate = dueDateStr;
+          if (next[idx].name !== label) updates.name = label;
+          if (Object.keys(updates).length > 0) {
+            next[idx] = { ...next[idx], ...updates };
+            changed = true;
+          }
         }
       });
       next = next.filter((d) => {
@@ -612,6 +615,7 @@ export default function FinanceTracker() {
           expenseCategories={expenseCategories} setExpenseCategories={setExpenseCategories}
           creditCards={creditCards} setCreditCards={setCreditCards}
           cardSettings={cardSettings} setCardSettings={setCardSettings}
+          setTransactions={setTransactions} setDebts={setDebts}
           onClose={() => setShowSettingsPage(false)}
         />
       )}
@@ -1574,8 +1578,31 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions }) {
 
   const sorted = [...debts].sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1));
 
+  const now = new Date();
+  const thisYm = ymOf(now);
+  const nextYm = ymOf(new Date(now.getFullYear(), now.getMonth() + 1, 1));
+  const summarize = (ym) => {
+    const items = debts.filter((d) => !d.paid && d.dueDate.slice(0, 7) === ym);
+    return { total: items.reduce((a, d) => a + Number(d.amount), 0), count: items.length };
+  };
+  const thisMonthSummary = summarize(thisYm);
+  const nextMonthSummary = summarize(nextYm);
+
   return (
     <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-3">
+        <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-4 text-white">
+          <p className="text-xs mb-1.5" style={{ color: "rgba(255,255,255,0.75)" }}>ต้องชำระเดือนนี้</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-xl mb-1">{fmtTHB(thisMonthSummary.total)}</p>
+          <p className="text-[11px]" style={{ color: "rgba(255,255,255,0.75)" }}>{thisMonthSummary.count} รายการ</p>
+        </div>
+        <div style={{ background: C.card, border: `1.5px solid ${C.graySoft}` }} className="rounded-3xl p-4">
+          <p className="text-xs mb-1.5" style={{ color: C.inkSoft }}>ต้องชำระเดือนหน้า</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif", color: C.ink }} className="text-xl mb-1">{fmtTHB(nextMonthSummary.total)}</p>
+          <p className="text-[11px]" style={{ color: C.inkSoft }}>{nextMonthSummary.count} รายการ</p>
+        </div>
+      </div>
+
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เพิ่มรายการหนี้สิน / กำหนดชำระ</p>
         <div className="flex rounded-full overflow-hidden p-1 mb-3.5 w-fit" style={{ background: C.graySoft }}>
@@ -2839,7 +2866,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
 /*  Settings — user-editable categories, subcategories, credit cards */
 /*  (per-account, since storage is already isolated per user)        */
 /* ---------------------------------------------------------------- */
-function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, setCreditCards, cardSettings, setCardSettings, onClose }) {
+function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, setCreditCards, cardSettings, setCardSettings, setTransactions, setDebts, onClose }) {
   const [section, setSection] = useState("categories");
   const [expandedCat, setExpandedCat] = useState(null);
   const [form, setForm] = useState(null);
@@ -2892,6 +2919,20 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
           next[nm] = { cutoffDay: form.cutoffDay, dueDay: form.dueDay };
           return next;
         });
+        if (nm !== form.oldName) {
+          // Renaming a card only changed the card list — every transaction
+          // and debt that already referenced the old name by that literal
+          // string needs updating too, or the Debts page would keep
+          // showing the old name / lose track of its statement cycle.
+          setTransactions((prev) => prev.map((t) => (t.card === form.oldName ? { ...t, card: nm } : t)));
+          const oldPrefix = "cc-" + form.oldName + "-";
+          setDebts((prev) => prev.map((d) => {
+            if (d.card !== form.oldName) return d;
+            const renamed = { ...d, card: nm };
+            if (d.auto && d.id.startsWith(oldPrefix)) renamed.id = "cc-" + nm + "-" + d.id.slice(oldPrefix.length);
+            return renamed;
+          }));
+        }
       }
     }
     setForm(null);
