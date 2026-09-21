@@ -611,7 +611,7 @@ export default function FinanceTracker() {
         <SettingsPage
           expenseCategories={expenseCategories} setExpenseCategories={setExpenseCategories}
           creditCards={creditCards} setCreditCards={setCreditCards}
-          setCardSettings={setCardSettings}
+          cardSettings={cardSettings} setCardSettings={setCardSettings}
           onClose={() => setShowSettingsPage(false)}
         />
       )}
@@ -2839,7 +2839,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
 /*  Settings — user-editable categories, subcategories, credit cards */
 /*  (per-account, since storage is already isolated per user)        */
 /* ---------------------------------------------------------------- */
-function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, setCreditCards, setCardSettings, onClose }) {
+function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, setCreditCards, cardSettings, setCardSettings, onClose }) {
   const [section, setSection] = useState("categories");
   const [expandedCat, setExpandedCat] = useState(null);
   const [form, setForm] = useState(null);
@@ -2858,10 +2858,11 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
     setForm({ mode: "editSub", catKey, subKey: sub.key, name: sub.label, icon: sub.icon, color: sub.color });
   }
   function openNewCardForm() {
-    setForm({ mode: "newCard", name: "", icon: "CreditCard", color: CATEGORY_COLOR_PALETTE[creditCards.length % CATEGORY_COLOR_PALETTE.length] });
+    setForm({ mode: "newCard", name: "", icon: "CreditCard", color: CATEGORY_COLOR_PALETTE[creditCards.length % CATEGORY_COLOR_PALETTE.length], cutoffDay: 25, dueDay: 5 });
   }
   function openEditCardForm(cd) {
-    setForm({ mode: "editCard", oldName: cd.name, name: cd.name, icon: cd.icon, color: cd.color });
+    const cs = cardSettings[cd.name] || { cutoffDay: 25, dueDay: 5 };
+    setForm({ mode: "editCard", oldName: cd.name, name: cd.name, icon: cd.icon, color: cd.color, cutoffDay: cs.cutoffDay, dueDay: cs.dueDay });
   }
   function saveForm() {
     if (!form.name.trim()) return;
@@ -2879,15 +2880,18 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
       const nm = form.name.trim();
       if (!creditCards.some((c) => c.name === nm)) {
         setCreditCards((prev) => [...prev, { name: nm, icon: form.icon, color: form.color }]);
-        setCardSettings((prev) => ({ ...prev, [nm]: { cutoffDay: 25, dueDay: 5 } }));
+        setCardSettings((prev) => ({ ...prev, [nm]: { cutoffDay: form.cutoffDay, dueDay: form.dueDay } }));
       }
     } else if (form.mode === "editCard") {
       const nm = form.name.trim();
       if (nm === form.oldName || !creditCards.some((c) => c.name === nm)) {
         setCreditCards((prev) => prev.map((c) => (c.name === form.oldName ? { name: nm, icon: form.icon, color: form.color } : c)));
-        if (nm !== form.oldName) {
-          setCardSettings((prev) => { const next = { ...prev }; if (next[form.oldName]) { next[nm] = next[form.oldName]; delete next[form.oldName]; } return next; });
-        }
+        setCardSettings((prev) => {
+          const next = { ...prev };
+          if (nm !== form.oldName && next[form.oldName]) delete next[form.oldName];
+          next[nm] = { cutoffDay: form.cutoffDay, dueDay: form.dueDay };
+          return next;
+        });
       }
     }
     setForm(null);
@@ -2961,17 +2965,21 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
           <div className="flex flex-col gap-2">
             {creditCards.map((cd) => {
               const CardIcon = resolveIcon(cd.icon);
+              const cs = cardSettings[cd.name] || { cutoffDay: 25, dueDay: 5 };
               return (
                 <div key={cd.name} style={{ background: C.bg }} className="flex items-center gap-2.5 rounded-2xl p-3">
                   <div style={{ background: cd.color }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><CardIcon size={15} color="#fff" /></div>
-                  <span className="text-sm font-bold flex-1">{cd.name}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold truncate">{cd.name}</p>
+                    <p className="text-[11px]" style={{ color: C.inkSoft }}>ตัดยอดวันที่ {cs.cutoffDay} · ครบกำหนดวันที่ {cs.dueDay}</p>
+                  </div>
                   <button onClick={() => openEditCardForm(cd)} style={{ color: C.purple }} className="p-1"><Pencil size={14} /></button>
                   <button onClick={() => deleteCard(cd.name)} style={{ color: creditCards.length <= 1 ? C.graySoft : C.gray }} className="p-1" disabled={creditCards.length <= 1}><Trash2 size={14} /></button>
                 </div>
               );
             })}
             <button onClick={openNewCardForm} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-sm font-bold"><Plus size={15} />เพิ่มบัตรเครดิต</button>
-            <p className="text-[11px] mt-1" style={{ color: C.inkSoft }}>เลือกไอคอน+สีเป็นสัญลักษณ์แทนได้ (ไม่ใช่โลโก้จริงของธนาคาร) ตั้งวันตัดรอบ/ครบกำหนดของแต่ละบัตรได้ที่แท็บ "Fix Cost"</p>
+            <p className="text-[11px] mt-1" style={{ color: C.inkSoft }}>เลือกไอคอน+สีเป็นสัญลักษณ์แทนได้ (ไม่ใช่โลโก้จริงของธนาคาร) กำหนดวันตัดยอด/ครบกำหนดชำระของแต่ละบัตรได้ตอนเพิ่มหรือแก้ไขบัตร</p>
           </div>
         )}
       </div>
@@ -2999,6 +3007,18 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
                 <button key={c} onClick={() => setForm({ ...form, color: c })} style={{ background: c, width: 26, height: 26, borderRadius: 26, border: form.color === c ? `3px solid ${C.ink}` : "3px solid transparent" }} />
               ))}
             </div>
+            {(form.mode === "newCard" || form.mode === "editCard") && (
+              <div className="grid grid-cols-2 gap-3 mb-5">
+                <div>
+                  <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>วันตัดยอด</p>
+                  <input type="number" min="1" max="31" value={form.cutoffDay} onChange={(e) => setForm({ ...form, cutoffDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) })} style={inputStyle} />
+                </div>
+                <div>
+                  <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>วันครบกำหนดชำระ</p>
+                  <input type="number" min="1" max="31" value={form.dueDay} onChange={(e) => setForm({ ...form, dueDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) })} style={inputStyle} />
+                </div>
+              </div>
+            )}
             <div className="flex gap-2">
               <button onClick={() => setForm(null)} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2.5 rounded-full text-sm font-bold">ยกเลิก</button>
               <button onClick={saveForm} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex-1 py-2.5 rounded-full text-sm font-bold">บันทึก</button>
