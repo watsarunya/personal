@@ -462,7 +462,7 @@ export default function FinanceTracker() {
         if (idx === -1) {
           next.push({ id, name: label, amount: amt, dueDate: dueDateStr, recurring: false, paid: false, auto: true, card });
           changed = true;
-        } else if (!next[idx].paid) {
+        } else if (!next[idx].paid && !next[idx].dismissed) {
           const updates = {};
           if (!next[idx].amountOverridden && next[idx].amount !== amt) updates.amount = amt;
           if (next[idx].dueDate !== dueDateStr) updates.dueDate = dueDateStr;
@@ -476,9 +476,21 @@ export default function FinanceTracker() {
       next = next.filter((d) => {
         if (!d.auto) return true;
         const statementYm = d.id.slice(("cc-" + d.card + "-").length);
-        if (!(d.card + "|" + statementYm in totals) && !d.paid && !d.amountOverridden) { changed = true; return false; }
+        if (!(d.card + "|" + statementYm in totals) && !d.paid && !d.amountOverridden && !d.dismissed) { changed = true; return false; }
         return true;
       });
+      // Defensive dedupe: two entries should never share the same id, but
+      // a rename that happened before the cascade fix existed could have
+      // left stale duplicates. Keep the most informative copy (paid, or
+      // the one with a manually-corrected amount) and drop the rest.
+      const byId = new Map();
+      next.forEach((d) => {
+        const existing = byId.get(d.id);
+        if (!existing) { byId.set(d.id, d); return; }
+        changed = true;
+        if (d.paid || d.amountOverridden) byId.set(d.id, d);
+      });
+      if (byId.size !== next.length) next = Array.from(byId.values());
       return changed ? next : prev;
     });
   }, [transactions, cardSettings]);
@@ -1544,7 +1556,19 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions }) {
     setDebts((prev) => [item, ...prev]);
     setName(""); setAmount("");
   }
-  function remove(id) { setDebts((prev) => prev.filter((d) => d.id !== id)); }
+  function remove(id) {
+    setDebts((prev) => {
+      const target = prev.find((d) => d.id === id);
+      if (target && target.auto) {
+        // An auto-synced credit-card debt is derived from real transactions —
+        // hard-deleting it would just have the sync effect recreate it next
+        // time transactions/cardSettings change. Mark it dismissed instead
+        // so the sync effect leaves it alone and it stays hidden.
+        return prev.map((d) => (d.id === id ? { ...d, dismissed: true } : d));
+      }
+      return prev.filter((d) => d.id !== id);
+    });
+  }
   function updateAmount(id, val) {
     const amt = parseFloat(val);
     if (isNaN(amt) || amt < 0) return;
@@ -1576,13 +1600,13 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions }) {
     }));
   }
 
-  const sorted = [...debts].sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1));
+  const sorted = [...debts].filter((d) => !d.dismissed).sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1));
 
   const now = new Date();
   const thisYm = ymOf(now);
   const nextYm = ymOf(new Date(now.getFullYear(), now.getMonth() + 1, 1));
   const summarize = (ym) => {
-    const items = debts.filter((d) => !d.paid && d.dueDate.slice(0, 7) === ym);
+    const items = debts.filter((d) => !d.paid && !d.dismissed && d.dueDate.slice(0, 7) === ym);
     return { total: items.reduce((a, d) => a + Number(d.amount), 0), count: items.length };
   };
   const thisMonthSummary = summarize(thisYm);
@@ -2889,7 +2913,20 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
   }
   function openEditCardForm(cd) {
     const cs = cardSettings[cd.name] || { cutoffDay: 25, dueDay: 5 };
-    setForm({ mode: "editCard", oldName: cd.name, name: cd.name, icon: cd.icon, color: cd.color, cutoffDay: cs.cutoffDay, dueDay: cs.dueDay });
+    setForm({ mode: "editCard", oldName: cd.name, name: cd.name, icon: cd.icon, color: cd.color, cutoffDay: cs.cutoffDay, dueDay: cs.dueDay, mergeFrom: "" });
+  }
+  function mergeStaleName(currentName, staleName) {
+    const from = staleName.trim();
+    if (!from || from === currentName) return;
+    setTransactions((prev) => prev.map((t) => (t.card === from ? { ...t, card: currentName } : t)));
+    const oldPrefix = "cc-" + from + "-";
+    setDebts((prev) => prev.map((d) => {
+      if (d.card !== from) return d;
+      const renamed = { ...d, card: currentName };
+      if (d.auto && d.id.startsWith(oldPrefix)) renamed.id = "cc-" + currentName + "-" + d.id.slice(oldPrefix.length);
+      return renamed;
+    }));
+    setCardSettings((prev) => { const next = { ...prev }; delete next[from]; return next; });
   }
   function saveForm() {
     if (!form.name.trim()) return;
@@ -2924,14 +2961,12 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
           // and debt that already referenced the old name by that literal
           // string needs updating too, or the Debts page would keep
           // showing the old name / lose track of its statement cycle.
-          setTransactions((prev) => prev.map((t) => (t.card === form.oldName ? { ...t, card: nm } : t)));
-          const oldPrefix = "cc-" + form.oldName + "-";
-          setDebts((prev) => prev.map((d) => {
-            if (d.card !== form.oldName) return d;
-            const renamed = { ...d, card: nm };
-            if (d.auto && d.id.startsWith(oldPrefix)) renamed.id = "cc-" + nm + "-" + d.id.slice(oldPrefix.length);
-            return renamed;
-          }));
+          mergeStaleName(nm, form.oldName);
+        }
+        if (form.mergeFrom && form.mergeFrom.trim()) {
+          // Explicit cleanup: fold records still stuck under a name that
+          // was renamed before this cascade fix existed.
+          mergeStaleName(nm, form.mergeFrom);
         }
       }
     }
@@ -3059,6 +3094,13 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
                   <input type="number" min="1" max="31" value={form.dueDay} onChange={(e) => setForm({ ...form, dueDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) })} style={inputStyle} />
                 </div>
               </div>
+            )}
+            {form.mode === "editCard" && (
+              <details className="mb-5">
+                <summary className="text-xs font-bold cursor-pointer" style={{ color: C.inkSoft }}>ขั้นสูง: รวมรายการเก่าที่ค้างจากชื่อบัตรอื่น</summary>
+                <p className="text-[11px] mt-1.5 mb-2" style={{ color: C.inkSoft }}>ถ้าเคยเปลี่ยนชื่อบัตรใบนี้มาก่อน แล้วยังเห็นรายการซ้ำในหน้า Debts ที่ใช้ชื่อเดิม พิมพ์ชื่อเดิมตรงนี้เพื่อรวมเข้าด้วยกัน</p>
+                <input value={form.mergeFrom} onChange={(e) => setForm({ ...form, mergeFrom: e.target.value })} placeholder="ชื่อเดิมที่ต้องการรวมเข้ามา" style={inputStyle} />
+              </details>
             )}
             <div className="flex gap-2">
               <button onClick={() => setForm(null)} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2.5 rounded-full text-sm font-bold">ยกเลิก</button>
