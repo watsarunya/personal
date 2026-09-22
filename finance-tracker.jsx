@@ -192,6 +192,11 @@ function addMonths(ym, delta) {
   const d = new Date(y, m - 1 + delta, 1);
   return ymOf(d);
 }
+function dateForDayInMonth(ym, day) {
+  const [y, m] = ym.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  return toLocalDateStr(new Date(y, m - 1, Math.min(Math.max(1, day), lastDay)));
+}
 function effectiveAmount(item, ym, overrides) {
   if (!item.recurring) return item.amount;
   const ov = overrides?.[ym]?.[item.id];
@@ -207,6 +212,7 @@ function itemsForMonth(items, ym) {
 }
 
 const HOME_LOAN_FIXCOST_ID = "home-loan-fixcost";
+const HOME_LOAN_DEBT_ID = "home-loan-debt";
 
 function rateForMonth(rateChanges, ym) {
   const sorted = [...(rateChanges || [])].sort((a, b) => a.ym.localeCompare(b.ym));
@@ -300,8 +306,17 @@ function mergeMaps(localMap, remoteMap) {
 
 /* ---------------------------------------------------------------- */
 
-export default function FinanceTracker() {
+export default function FinanceTracker({ syncStatus, syncUsername, syncError, onOpenSyncSettings, buildVersion } = {}) {
   const [tab, setTab] = useState("overview");
+  // Global toast — one implementation shared by every page, so any add/delete
+  // action anywhere in the app can surface the same top-right confirmation.
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useRef(null);
+  function showToast(msg) {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 2200);
+  }
   const [transactions, setTransactions] = useState([]);
   const [savings, setSavings] = useState([]);
   const [debts, setDebts] = useState([]);
@@ -335,6 +350,16 @@ export default function FinanceTracker() {
   const [deletedDebtIds, setDeletedDebtIds] = useState([]);
   const [deletedBankNames, setDeletedBankNames] = useState([]);
   const [deletedCardNames, setDeletedCardNames] = useState([]);
+  const [deletedCategoryKeys, setDeletedCategoryKeys] = useState([]);
+  // Same vulnerability class as debts/banks/cards/categories: deleting a
+  // transaction, a savings log entry, or a portfolio holding is a plain
+  // array filter, and the cross-device merge unions with remote by id — so
+  // without a tombstone, a delete can get silently resurrected by a save
+  // that races against a not-yet-caught-up remote copy.
+  const [deletedTransactionIds, setDeletedTransactionIds] = useState([]);
+  const [deletedSavingsIds, setDeletedSavingsIds] = useState([]);
+  const [deletedHoldingIds, setDeletedHoldingIds] = useState([]);
+  const [deletedInvestItemIds, setDeletedInvestItemIds] = useState([]);
   // Cash-on-hand works the same way as a bank balance: an anchor the user
   // sets directly, plus the net effect of every cash transaction — but
   // unlike banks (a new field old transactions never had), payment==='cash'
@@ -356,9 +381,13 @@ export default function FinanceTracker() {
         // Hard delete: keep only the last 6 months of transactions. This is
         // permanent — anything older is dropped here and never written back.
         const cutoff = retentionCutoffStr();
-        const keptTransactions = (data.transactions || []).filter((t) => t.date >= cutoff);
+        const txTombstones = data.deletedTransactionIds || [];
+        setDeletedTransactionIds(txTombstones);
+        const keptTransactions = (data.transactions || []).filter((t) => t.date >= cutoff && !txTombstones.includes(t.id));
         setTransactions(keptTransactions);
-        setSavings(data.savings || []);
+        const savingsTombstones = data.deletedSavingsIds || [];
+        setDeletedSavingsIds(savingsTombstones);
+        setSavings((data.savings || []).filter((s) => !savingsTombstones.includes(s.id)));
         const tombstones = data.deletedDebtIds || [];
         setDeletedDebtIds(tombstones);
         setDebts((data.debts || []).filter((d) => !tombstones.includes(d.id)));
@@ -379,12 +408,18 @@ export default function FinanceTracker() {
             return next;
           });
         }
-        if (data.investPlan) setInvestPlan((p) => ({ ...p, ...data.investPlan, overrides: data.investPlan.overrides || {} }));
-        setHoldings(data.holdings || []);
+        const investItemTombstones = data.deletedInvestItemIds || [];
+        setDeletedInvestItemIds(investItemTombstones);
+        if (data.investPlan) setInvestPlan((p) => ({ ...p, ...data.investPlan, items: (data.investPlan.items || []).filter((i) => !investItemTombstones.includes(i.id)), overrides: data.investPlan.overrides || {} }));
+        const holdingsTombstones = data.deletedHoldingIds || [];
+        setDeletedHoldingIds(holdingsTombstones);
+        setHoldings((data.holdings || []).filter((h) => !holdingsTombstones.includes(h.id)));
         if (data.homeLoan) setHomeLoan((prev) => ({ ...prev, ...data.homeLoan }));
         if (data.dismissedAlerts) setDismissedAlerts(data.dismissedAlerts);
         setProfiles(data.profiles || []);
-        if (data.expenseCategories) setExpenseCategories(data.expenseCategories);
+        const categoryTombstones = data.deletedCategoryKeys || [];
+        setDeletedCategoryKeys(categoryTombstones);
+        if (data.expenseCategories) setExpenseCategories(data.expenseCategories.filter((c) => !categoryTombstones.includes(c.key)));
         const cardTombstones = data.deletedCardNames || [];
         setDeletedCardNames(cardTombstones);
         if (data.creditCards) setCreditCards(data.creditCards.map((c) => typeof c === "string" ? { name: c, icon: "CreditCard", color: "#6C5CE7" } : c).filter((c) => !cardTombstones.includes(c.name)));
@@ -425,7 +460,7 @@ export default function FinanceTracker() {
     const t = setTimeout(async () => {
       const localBlob = {
         transactions, savings, debts, budgets,
-        planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards, deletedDebtIds, banks, bankBalances, deletedBankNames, deletedCardNames, cashBalance,
+        planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards, deletedDebtIds, banks, bankBalances, deletedBankNames, deletedCardNames, cashBalance, deletedCategoryKeys, deletedTransactionIds, deletedSavingsIds, deletedHoldingIds, deletedInvestItemIds,
       };
       try {
         // Read the latest remote data first and merge it with what we're
@@ -436,9 +471,14 @@ export default function FinanceTracker() {
         const mergedDeletedDebtIds = Array.from(new Set([...(deletedDebtIds || []), ...((remote.deletedDebtIds) || [])]));
         const mergedDeletedBankNames = Array.from(new Set([...(deletedBankNames || []), ...((remote.deletedBankNames) || [])]));
         const mergedDeletedCardNames = Array.from(new Set([...(deletedCardNames || []), ...((remote.deletedCardNames) || [])]));
+        const mergedDeletedCategoryKeys = Array.from(new Set([...(deletedCategoryKeys || []), ...((remote.deletedCategoryKeys) || [])]));
+        const mergedDeletedInvestItemIds = Array.from(new Set([...(deletedInvestItemIds || []), ...((remote.deletedInvestItemIds) || [])]));
+        const mergedDeletedTransactionIds = Array.from(new Set([...(deletedTransactionIds || []), ...((remote.deletedTransactionIds) || [])]));
+        const mergedDeletedSavingsIds = Array.from(new Set([...(deletedSavingsIds || []), ...((remote.deletedSavingsIds) || [])]));
+        const mergedDeletedHoldingIds = Array.from(new Set([...(deletedHoldingIds || []), ...((remote.deletedHoldingIds) || [])]));
         const merged = {
-          transactions: mergeArraysById(transactions, remote.transactions).filter((t) => t.date >= retentionCutoffStr()),
-          savings: mergeArraysById(savings, remote.savings),
+          transactions: mergeArraysById(transactions, remote.transactions).filter((t) => t.date >= retentionCutoffStr() && !mergedDeletedTransactionIds.includes(t.id)),
+          savings: mergeArraysById(savings, remote.savings).filter((s) => !mergedDeletedSavingsIds.includes(s.id)),
           debts: dedupeAutoDebtsByCardDue(mergeArraysById(debts, remote.debts).filter((d) => !mergedDeletedDebtIds.includes(d.id))),
           budgets: mergeMaps(budgets, remote.budgets),
           planIncomeItems: mergeArraysById(planIncomeItems, remote.planIncomeItems),
@@ -446,18 +486,22 @@ export default function FinanceTracker() {
           planOverrides,
           savingsPlan,
           cardSettings: mergeMaps(cardSettings, remote.cardSettings),
-          investPlan: { ...investPlan, items: mergeArraysById(investPlan.items, remote.investPlan?.items) },
-          holdings: mergeArraysById(holdings, remote.holdings),
+          investPlan: { ...investPlan, items: mergeArraysById(investPlan.items, remote.investPlan?.items).filter((i) => !mergedDeletedInvestItemIds.includes(i.id)) },
+          holdings: mergeArraysById(holdings, remote.holdings).filter((h) => !mergedDeletedHoldingIds.includes(h.id)),
           homeLoan,
           dismissedAlerts: mergeMaps(dismissedAlerts, remote.dismissedAlerts),
           profiles,
-          expenseCategories: mergeArraysById(expenseCategories, remote.expenseCategories, "key"),
+          expenseCategories: mergeArraysById(expenseCategories, remote.expenseCategories, "key").filter((c) => !mergedDeletedCategoryKeys.includes(c.key)),
           creditCards: mergeArraysById(creditCards, remote.creditCards, "name").filter((c) => !mergedDeletedCardNames.includes(c.name)),
           deletedDebtIds: mergedDeletedDebtIds,
           banks: mergeArraysById(banks, remote.banks, "name").filter((b) => !mergedDeletedBankNames.includes(b.name)),
           bankBalances: mergeMaps(bankBalances, remote.bankBalances),
           deletedBankNames: mergedDeletedBankNames,
           deletedCardNames: mergedDeletedCardNames,
+          deletedCategoryKeys: mergedDeletedCategoryKeys,
+          deletedTransactionIds: mergedDeletedTransactionIds,
+          deletedSavingsIds: mergedDeletedSavingsIds,
+          deletedHoldingIds: mergedDeletedHoldingIds,
           cashBalance,
         };
         await window.storage.set(STORAGE_KEY, JSON.stringify(merged));
@@ -478,6 +522,11 @@ export default function FinanceTracker() {
         if (merged.deletedBankNames.length !== (deletedBankNames || []).length) setDeletedBankNames(merged.deletedBankNames);
         if (merged.deletedCardNames.length !== (deletedCardNames || []).length) setDeletedCardNames(merged.deletedCardNames);
         if (merged.creditCards.length !== creditCards.length) setCreditCards(merged.creditCards);
+        if (merged.deletedCategoryKeys.length !== (deletedCategoryKeys || []).length) setDeletedCategoryKeys(merged.deletedCategoryKeys);
+        if (merged.expenseCategories.length !== expenseCategories.length) setExpenseCategories(merged.expenseCategories);
+        if (merged.deletedTransactionIds.length !== (deletedTransactionIds || []).length) setDeletedTransactionIds(merged.deletedTransactionIds);
+        if (merged.deletedSavingsIds.length !== (deletedSavingsIds || []).length) setDeletedSavingsIds(merged.deletedSavingsIds);
+        if (merged.deletedHoldingIds.length !== (deletedHoldingIds || []).length) setDeletedHoldingIds(merged.deletedHoldingIds);
       } catch (e) {
         // Offline or request failed — fall back to a plain save of local
         // state so nothing is lost locally; it'll merge properly next time.
@@ -485,7 +534,7 @@ export default function FinanceTracker() {
       }
     }, 250);
     return () => clearTimeout(t);
-  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards, deletedDebtIds, banks, bankBalances, deletedBankNames, deletedCardNames, cashBalance]);
+  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards, deletedDebtIds, banks, bankBalances, deletedBankNames, deletedCardNames, cashBalance, deletedCategoryKeys, deletedTransactionIds, deletedSavingsIds, deletedHoldingIds, deletedInvestItemIds]);
 
   // Sync the home loan installment into Monthly Plan's Fix Cost list automatically
   useEffect(() => {
@@ -517,6 +566,46 @@ export default function FinanceTracker() {
         next[newIdx] = { ...existing, ...item }; return next;
       }
       return prev;
+    });
+  }, [homeLoan, planOverrides]);
+
+  // Sync the home loan installment into the Debts tab automatically, as a
+  // single recurring auto-managed debt — the existing "mark paid → roll
+  // forward one month" behavior in Debts handles subsequent months on its
+  // own, same as any other recurring debt.
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    setDebts((prev) => {
+      const idx = prev.findIndex((d) => d.id === HOME_LOAN_DEBT_ID);
+      const schedule = homeLoan.active ? buildAmortizationSchedule(homeLoan, planOverrides) : [];
+      const payoffYm = schedule.length ? schedule[schedule.length - 1].ym : null;
+      const itemName = homeLoan.name || "ผ่อนบ้าน";
+      if (!homeLoan.active || !homeLoan.payment) {
+        return idx === -1 ? prev : prev.filter((d) => d.id !== HOME_LOAN_DEBT_ID);
+      }
+      if (idx === -1) {
+        // Seed the first due date: the loan's due-day in the later of
+        // (this month, the loan's start month), pushed to next month if
+        // that date has already passed.
+        const dueDay = homeLoan.dueDay || 5;
+        let candidateYm = homeLoan.startMonth && homeLoan.startMonth > ymOf(new Date()) ? homeLoan.startMonth : ymOf(new Date());
+        let candidateDate = dateForDayInMonth(candidateYm, dueDay);
+        if (candidateDate < todayStr()) { candidateYm = addMonths(candidateYm, 1); candidateDate = dateForDayInMonth(candidateYm, dueDay); }
+        if (payoffYm && candidateYm > payoffYm) return prev; // loan already paid off by then
+        return [...prev, { id: HOME_LOAN_DEBT_ID, name: itemName, amount: homeLoan.payment, dueDate: candidateDate, recurring: true, paid: false, auto: true }];
+      }
+      const existing = prev[idx];
+      // The loan finished paying off before this entry's current cycle —
+      // stop generating it (leave it alone if already paid/dismissed).
+      if (payoffYm && existing.dueDate.slice(0, 7) > payoffYm && !existing.paid && !existing.dismissed) {
+        return prev.filter((d) => d.id !== HOME_LOAN_DEBT_ID);
+      }
+      if (existing.paid || existing.dismissed) return prev;
+      const updates = {};
+      if (!existing.amountOverridden && existing.amount !== homeLoan.payment) updates.amount = homeLoan.payment;
+      if (existing.name !== itemName) updates.name = itemName;
+      if (Object.keys(updates).length === 0) return prev;
+      return prev.map((d) => (d.id === HOME_LOAN_DEBT_ID ? { ...d, ...updates } : d));
     });
   }, [homeLoan, planOverrides]);
 
@@ -562,7 +651,7 @@ export default function FinanceTracker() {
         }
       });
       next = next.filter((d) => {
-        if (!d.auto) return true;
+        if (!d.auto || !d.id.startsWith("cc-")) return true;
         const statementYm = d.id.slice(("cc-" + d.card + "-").length);
         if (!(d.card + "|" + statementYm in totals) && !d.paid && !d.amountOverridden && !d.dismissed) { changed = true; return false; }
         return true;
@@ -606,6 +695,33 @@ export default function FinanceTracker() {
   const totalSpentBudgeted = Object.entries(budgets).reduce((a, [k]) => a + (monthSpend[k] || 0), 0);
   const budgetPct = totalBudget > 0 ? Math.min(100, Math.round((totalSpentBudgeted / totalBudget) * 100)) : null;
 
+  // Auto-sync the savings/invest plan targets into the Savings & Investment
+  // tab for the real current month. This used to live inside the Fix Cost
+  // tab's own component and only ran while that tab was mounted — moved up
+  // here so it keeps working (and always reflects the actual current month)
+  // regardless of whether Fix Cost is in the navigation.
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    const planIncomeThisMonth = itemsForMonth(planIncomeItems, monthKey).reduce((a, i) => a + effectiveAmount(i, monthKey, planOverrides), 0);
+    const savingAmt = savingsPlan.saving.mode === "percent" ? Math.round(planIncomeThisMonth * (savingsPlan.saving.value / 100)) : (Number(savingsPlan.saving.value) || 0);
+    const investAmt = savingsPlan.invest.mode === "percent" ? Math.round(planIncomeThisMonth * (savingsPlan.invest.value / 100)) : (Number(savingsPlan.invest.value) || 0);
+    setSavings((prev) => {
+      let next = [...prev];
+      let changed = false;
+      [
+        ["plan-saving-" + monthKey, "saving", savingAmt, `เงินออมตามแผน (${monthLabel(monthKey)})`],
+        ["plan-invest-" + monthKey, "investment", investAmt, `เงินลงทุนตามแผน (${monthLabel(monthKey)})`],
+      ].forEach(([id, kind, amt, name]) => {
+        const idx = next.findIndex((s) => s.id === id);
+        if (amt > 0) {
+          if (idx === -1) { next.push({ id, kind, name, amount: amt, date: monthKey + "-01", target: null, auto: true }); changed = true; }
+          else if (next[idx].amount !== amt) { next[idx] = { ...next[idx], amount: amt }; changed = true; }
+        } else if (idx !== -1) { next.splice(idx, 1); changed = true; }
+      });
+      return changed ? next : prev;
+    });
+  }, [planIncomeItems, planOverrides, savingsPlan, monthKey]);
+
   const alerts = useMemo(() => {
     const list = [];
     Object.entries(budgets).forEach(([cat, limit]) => {
@@ -625,12 +741,6 @@ export default function FinanceTracker() {
       if (diff < 0) list.push({ id: "d-" + d.id, level: "hot", text: `เลยกำหนดชำระ "${d.name}" มาแล้ว ${Math.abs(diff)} วัน (${fmtTHB(d.amount)})` });
       else if (diff <= 3) list.push({ id: "d-" + d.id, level: "warn", text: `ใกล้ถึงกำหนดชำระ "${d.name}" อีก ${diff} วัน (${fmtTHB(d.amount)})` });
     });
-    const planIncomeThisMonth = itemsForMonth(planIncomeItems, monthKey).reduce((a, i) => a + effectiveAmount(i, monthKey, planOverrides), 0);
-    const planFixCostThisMonth = itemsForMonth(planFixCostItems, monthKey).reduce((a, i) => a + effectiveAmount(i, monthKey, planOverrides), 0);
-    if (planIncomeThisMonth > 0 && planFixCostThisMonth / planIncomeThisMonth > 0.5) {
-      const pct = Math.round((planFixCostThisMonth / planIncomeThisMonth) * 100);
-      list.push({ id: "fixcost-high", level: "hot", text: `Fix Cost เดือนนี้รวม ${fmtTHB(planFixCostThisMonth)} คิดเป็น ${pct}% ของรายรับ เกินครึ่งหนึ่งของรายได้แล้ว` });
-    }
     investPlan.items.forEach((item) => {
       if (item.executed) return;
       const st = investItemStatus(item);
@@ -639,7 +749,7 @@ export default function FinanceTracker() {
       else if (st.level === "warn") list.push({ id: "inv-" + item.id, level: "warn", text: `ใกล้ถึงกำหนดลงทุน "${item.name}" ${st.text} (${fmtTHB(amt)})` });
     });
     return list;
-  }, [budgets, monthSpend, debts, planIncomeItems, planFixCostItems, planOverrides, monthKey, investPlan, expenseCategories]);
+  }, [budgets, monthSpend, debts, monthKey, investPlan, expenseCategories]);
 
   const visibleAlerts = useMemo(
     () => alerts.filter((a) => !dismissedAlerts[a.id] || dismissedAlerts[a.id] < todayStr()),
@@ -674,38 +784,33 @@ export default function FinanceTracker() {
   return (
     <div style={{ background: C.bg, fontFamily: "'Prompt', sans-serif", color: C.ink }} className="w-full min-h-full pb-24">
       <style>{FONT_IMPORT}</style>
+      {toast && (
+        <div style={{ position: "fixed", top: 14, right: 10, zIndex: 250, background: C.teal, color: "#fff" }} className="px-4 py-2.5 rounded-2xl text-sm font-bold shadow-lg flex items-center gap-2">
+          <CheckCircle2 size={16} />{toast}
+        </div>
+      )}
       <Header streak={streak} points={points} alertCount={visibleAlerts.length} budgetPct={budgetPct}
         activeProfile={profileById(profiles, activeProfileId)} onOpenProfilePicker={() => setShowProfilePicker(true)}
-        onOpenSettings={() => setShowSettingsPage(true)} />
+        onOpenSettings={() => setShowSettingsPage(true)}
+        syncStatus={syncStatus} syncUsername={syncUsername} syncError={syncError} onOpenSyncSettings={onOpenSyncSettings} buildVersion={buildVersion} />
       <main className="px-4 md:px-6 max-w-2xl mx-auto flex flex-col gap-4 mt-4">
         {tab === "overview" && (
           <Overview transactions={transactions} alerts={visibleAlerts} onDismissAlert={dismissAlert} setTab={setTab} expenseCategories={expenseCategories} banks={banks} bankBalances={bankBalances} cashBalance={cashBalance} />
         )}
         {tab === "transactions" && (
-          <TransactionsTab transactions={transactions} setTransactions={setTransactions} budgets={budgets} setTab={setTab} expenseCategories={expenseCategories} creditCards={creditCards} banks={banks} />
+          <TransactionsTab transactions={transactions} setTransactions={setTransactions} budgets={budgets} setTab={setTab} expenseCategories={expenseCategories} creditCards={creditCards} banks={banks} setDeletedTransactionIds={setDeletedTransactionIds} showToast={showToast} />
         )}
         {tab === "savings" && (
-          <SavingsTab savings={savings} setSavings={setSavings} investPlan={investPlan} setInvestPlan={setInvestPlan} holdings={holdings} setHoldings={setHoldings} banks={banks} bankBalances={bankBalances} setBankBalances={setBankBalances} transactions={transactions} cashBalance={cashBalance} setCashBalance={setCashBalance} />
+          <SavingsTab savings={savings} setSavings={setSavings} investPlan={investPlan} setInvestPlan={setInvestPlan} holdings={holdings} setHoldings={setHoldings} banks={banks} bankBalances={bankBalances} setBankBalances={setBankBalances} transactions={transactions} cashBalance={cashBalance} setCashBalance={setCashBalance} setDeletedSavingsIds={setDeletedSavingsIds} setDeletedHoldingIds={setDeletedHoldingIds} showToast={showToast} />
         )}
         {tab === "debts" && (
-          <DebtsTab debts={debts} setDebts={setDebts} creditCards={creditCards} setTransactions={setTransactions} setDeletedDebtIds={setDeletedDebtIds} />
+          <DebtsTab debts={debts} setDebts={setDebts} creditCards={creditCards} banks={banks} setTransactions={setTransactions} setDeletedDebtIds={setDeletedDebtIds} setPlanOverrides={setPlanOverrides} showToast={showToast} />
         )}
         {tab === "budgets" && (
           <BudgetsTab budgets={budgets} setBudgets={setBudgets} monthSpend={monthSpend} expenseCategories={expenseCategories} />
         )}
-        {tab === "plan" && (
-          <MonthlyPlanTab
-            planIncomeItems={planIncomeItems} setPlanIncomeItems={setPlanIncomeItems}
-            planFixCostItems={planFixCostItems} setPlanFixCostItems={setPlanFixCostItems}
-            planOverrides={planOverrides} setPlanOverrides={setPlanOverrides}
-            savingsPlan={savingsPlan} setSavingsPlan={setSavingsPlan}
-            cardSettings={cardSettings} setCardSettings={setCardSettings}
-            debts={debts} transactions={transactions} setSavings={setSavings}
-            creditCards={creditCards}
-          />
-        )}
         {tab === "homeLoan" && (
-          <HomePlanningTab homeLoan={homeLoan} setHomeLoan={setHomeLoan} planOverrides={planOverrides} setPlanOverrides={setPlanOverrides} planFixCostItems={planFixCostItems} setPlanFixCostItems={setPlanFixCostItems} />
+          <HomePlanningTab homeLoan={homeLoan} setHomeLoan={setHomeLoan} planOverrides={planOverrides} setPlanOverrides={setPlanOverrides} planFixCostItems={planFixCostItems} setPlanFixCostItems={setPlanFixCostItems} debts={debts} showToast={showToast} />
         )}
       </main>
       <BottomNav tab={tab} setTab={setTab} debtAlertCount={debtAlerts.length} />
@@ -724,7 +829,8 @@ export default function FinanceTracker() {
           banks={banks} setBanks={setBanks} bankBalances={bankBalances} setBankBalances={setBankBalances}
           transactions={transactions} debts={debts}
           setTransactions={setTransactions} setDebts={setDebts}
-          setDeletedBankNames={setDeletedBankNames} setDeletedCardNames={setDeletedCardNames}
+          setDeletedBankNames={setDeletedBankNames} setDeletedCardNames={setDeletedCardNames} setDeletedCategoryKeys={setDeletedCategoryKeys}
+          showToast={showToast}
           onClose={() => setShowSettingsPage(false)}
         />
       )}
@@ -733,38 +839,41 @@ export default function FinanceTracker() {
 }
 
 /* ---------------------------------------------------------------- */
-function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenProfilePicker, onOpenSettings }) {
+function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenProfilePicker, onOpenSettings, syncStatus, syncUsername, syncError, onOpenSyncSettings, buildVersion }) {
+  const syncLabel = syncStatus && syncStatus.mode === "cloud"
+    ? (syncStatus.connected ? `☁️ ${syncUsername || "ข้อมูลส่วนตัวของฉัน"}` : "⚠️ ออฟไลน์")
+    : syncStatus ? "💾 บันทึกในเครื่อง" : null;
   return (
     <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, borderRadius: "0 0 28px 28px" }} className="px-5 pt-6 pb-5 text-white">
       <div className="flex items-center justify-between">
-        <button onClick={onOpenProfilePicker} className="flex items-center gap-3 text-left">
-          <div style={{ background: activeProfile ? activeProfile.color : C.yellow }} className="w-11 h-11 rounded-full flex items-center justify-center shrink-0 shadow-sm">
-            {activeProfile ? (
-              <span style={{ fontFamily: "'Prompt', sans-serif", color: "#fff" }} className="text-lg font-bold">{activeProfile.name.trim()[0]?.toUpperCase()}</span>
+        <div className="flex items-center gap-3 text-left">
+          <button onClick={onOpenProfilePicker} className="shrink-0">
+            <div style={{ background: activeProfile ? activeProfile.color : C.yellow }} className="w-11 h-11 rounded-full flex items-center justify-center shadow-sm">
+              {activeProfile ? (
+                <span style={{ fontFamily: "'Prompt', sans-serif", color: "#fff" }} className="text-lg font-bold">{activeProfile.name.trim()[0]?.toUpperCase()}</span>
+              ) : (
+                <Wallet size={20} color={C.purpleDeep} strokeWidth={2.3} />
+              )}
+            </div>
+          </button>
+          <div>
+            <button onClick={onOpenProfilePicker} className="text-left">
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold leading-tight">{activeProfile ? `สวัสดี, ${activeProfile.name} 👋` : "สวัสดี 👋"}</p>
+            </button>
+            {syncLabel ? (
+              <button onClick={onOpenSyncSettings} className="flex items-center gap-1.5 mt-0.5">
+                <span style={{ background: "rgba(255,255,255,0.18)" }} className="text-[10px] font-bold px-2 py-0.5 rounded-full">{syncLabel}</span>
+                {buildVersion && <span style={{ color: "#DCDCFB" }} className="text-[9px] font-semibold">v{buildVersion}</span>}
+              </button>
             ) : (
-              <Wallet size={20} color={C.purpleDeep} strokeWidth={2.3} />
+              <p style={{ color: "#DCDCFB" }} className="text-xs leading-tight">{activeProfile ? "แตะเพื่อสลับผู้ใช้งาน" : "แตะเพื่อตั้งชื่อผู้ใช้งาน"}</p>
+            )}
+            {syncError && (
+              <button onClick={onOpenSyncSettings} style={{ color: "#FFD9CC" }} className="text-[10px] font-semibold text-left mt-0.5 block">{syncError}</button>
             )}
           </div>
-          <div>
-            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold leading-tight">{activeProfile ? `สวัสดี, ${activeProfile.name} 👋` : "สวัสดี 👋"}</p>
-            <p style={{ color: "#DCDCFB" }} className="text-xs leading-tight">{activeProfile ? "แตะเพื่อสลับผู้ใช้งาน" : "แตะเพื่อตั้งชื่อผู้ใช้งาน"}</p>
-          </div>
-        </button>
+        </div>
         <div className="flex items-center gap-2">
-          {streak > 0 && (
-            <div style={{ background: "rgba(255,255,255,0.18)" }} className="flex items-center gap-1 px-2.5 py-1.5 rounded-full">
-              <Flame size={14} color={C.yellow} fill={C.yellow} />
-              <span className="text-xs font-bold">{streak}</span>
-            </div>
-          )}
-          <div style={{ background: "rgba(255,255,255,0.18)" }} className="flex items-center gap-1 px-2.5 py-1.5 rounded-full">
-            <Star size={14} color={C.yellow} fill={C.yellow} />
-            <span className="text-xs font-bold">{points}</span>
-          </div>
-          <div style={{ background: "rgba(255,255,255,0.18)", position: "relative" }} className="p-1.5 rounded-full">
-            <Bell size={16} />
-            {alertCount > 0 && <span style={{ background: C.coral, width: 8, height: 8, top: 2, right: 2 }} className="absolute rounded-full" />}
-          </div>
           <button onClick={onOpenSettings} style={{ background: "rgba(255,255,255,0.18)" }} className="p-1.5 rounded-full">
             <Settings size={16} />
           </button>
@@ -791,7 +900,6 @@ function BottomNav({ tab, setTab, debtAlertCount }) {
     { key: "savings", label: "Savings", icon: PiggyBank },
     { key: "debts", label: "Debts", icon: Bell, badge: debtAlertCount },
     { key: "budgets", label: "Budget", icon: TrendingDown },
-    { key: "plan", label: "Fix Cost", icon: ClipboardList },
     { key: "homeLoan", label: "Home Loan", icon: Home },
   ];
   return (
@@ -976,15 +1084,14 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
 
       <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-5 shadow-sm text-white relative overflow-hidden">
         <div className="flex items-center justify-between mb-1">
-          <p className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>คงเหลือ{period === "day" ? "วันนี้" : period === "month" ? "เดือนนี้" : "ปีนี้"}</p>
+          <p className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>คงเหลือตอนนี้</p>
           <span style={{ background: "rgba(255,255,255,0.18)" }} className="text-[11px] px-2.5 py-1 rounded-full">{range.label}</span>
         </div>
         {(() => {
           const liquidTotal = computeCashBalance(transactions, cashBalance) + banks.reduce((a, b) => a + computeBankBalance(transactions, bankBalances, b.name), 0);
-          const netBalance = liquidTotal - expense;
-          return <p style={{ fontFamily: "'Prompt', sans-serif", color: netBalance < 0 ? "#FF5C5C" : "#fff" }} className="text-3xl mb-1">{fmtTHB(netBalance)}</p>;
+          return <p style={{ fontFamily: "'Prompt', sans-serif", color: liquidTotal < 0 ? "#FF5C5C" : "#fff" }} className="text-3xl mb-1">{fmtTHB(liquidTotal)}</p>;
         })()}
-        <p className="text-[10px] mb-3" style={{ color: "rgba(255,255,255,0.6)" }}>เงินสด + ธนาคารทั้งหมด (จากหน้าออม & ลงทุน) หักรายจ่ายช่วงนี้</p>
+        <p className="text-[10px] mb-3" style={{ color: "rgba(255,255,255,0.6)" }}>เงินสด + ธนาคารทั้งหมด (ตรงกับยอดรวมในหน้าออม & ลงทุน)</p>
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.22)" }} className="flex items-center pt-3 gap-4">
           <div className="flex-1 flex items-center gap-2">
             <div style={{ background: "rgba(255,255,255,0.18)" }} className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"><TrendingUp size={15} /></div>
@@ -1201,7 +1308,7 @@ function DateRangePicker({ from, to, onChange }) {
 }
 
 /* ---------------------------------------------------------------- */
-function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, expenseCategories, creditCards, banks = [] }) {
+function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, expenseCategories, creditCards, banks = [], setDeletedTransactionIds, showToast }) {
   const [editingId, setEditingId] = useState(null);
   const [type, setType] = useState("expense");
   const [amount, setAmount] = useState("");
@@ -1219,7 +1326,6 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
   const defaultDateTo = toLocalDateStr(new Date(now0.getFullYear(), now0.getMonth() + 1, 0));
   const [dateFrom, setDateFrom] = useState(defaultDateFrom);
   const [dateTo, setDateTo] = useState(defaultDateTo);
-  const [toast, setToast] = useState(null);
   const [catError, setCatError] = useState(false);
   const [payError, setPayError] = useState(false);
   const [cardError, setCardError] = useState(false);
@@ -1241,10 +1347,6 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
     setPayment(k); setPayError(false);
     if (k === "credit") { setCard(null); setShowCardModal(true); }
     else if (k === "transfer" && banks.length > 0) { setBank(null); setShowBankModal(true); }
-  }
-  function showToast(msg) {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2200);
   }
   function resetForm() {
     setEditingId(null); setType("expense"); setAmount(""); setCategory(null); setSubcategory(null); setCatError(false);
@@ -1284,7 +1386,12 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
     showToast(wasEditing ? "แก้ไขรายการสำเร็จ ✓" : "บันทึกรายการสำเร็จ ✓");
     resetForm();
   }
-  function remove(id) { setTransactions((prev) => prev.filter((t) => t.id !== id)); if (editingId === id) resetForm(); }
+  function remove(id) {
+    setTransactions((prev) => prev.filter((t) => t.id !== id));
+    setDeletedTransactionIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    if (editingId === id) resetForm();
+    showToast("ลบรายการสำเร็จ ✓");
+  }
 
   const sorted = [...transactions].sort((a, b) => (a.date < b.date ? 1 : -1));
   const byType = filter === "all" ? sorted : sorted.filter((t) => t.type === filter);
@@ -1297,11 +1404,6 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
 
   return (
     <div className="flex flex-col gap-4">
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 200, background: C.teal, color: "#fff" }} className="px-5 py-2.5 rounded-full text-sm font-bold shadow-lg flex items-center gap-2">
-          <CheckCircle2 size={16} />{toast}
-        </div>
-      )}
       {budgetAlert && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setBudgetAlert(null)}>
           <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%", textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
@@ -1596,7 +1698,7 @@ const inputStyle = {
 };
 
 /* ---------------------------------------------------------------- */
-function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, setHoldings, banks, bankBalances, setBankBalances, transactions, cashBalance, setCashBalance }) {
+function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, setHoldings, banks, bankBalances, setBankBalances, transactions, cashBalance, setCashBalance, setDeletedSavingsIds, setDeletedHoldingIds, showToast }) {
   const [subTab, setSubTab] = useState("log");
   const [kind, setKind] = useState("saving");
   const [name, setName] = useState("");
@@ -1609,8 +1711,13 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
     if (!amt || amt <= 0 || !name.trim()) return;
     setSavings((prev) => [{ id: uid(), kind, name: name.trim(), amount: amt, target: target ? parseFloat(target) : null, date }, ...prev]);
     setName(""); setAmount(""); setTarget("");
+    showToast("บันทึกรายการสำเร็จ ✓");
   }
-  function remove(id) { setSavings((prev) => prev.filter((s) => s.id !== id)); }
+  function remove(id) {
+    setSavings((prev) => prev.filter((s) => s.id !== id));
+    setDeletedSavingsIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    showToast("ลบรายการสำเร็จ ✓");
+  }
 
   const totalSaving = savings.filter((s) => s.kind === "saving").reduce((a, s) => a + s.amount, 0);
   const totalInvest = savings.filter((s) => s.kind === "investment").reduce((a, s) => a + s.amount, 0);
@@ -1749,18 +1856,18 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
       )}
 
       {subTab === "plan" && (
-        <InvestmentPlanPanel investPlan={investPlan} setInvestPlan={setInvestPlan} setSavings={setSavings} savings={savings} />
+        <InvestmentPlanPanel investPlan={investPlan} setInvestPlan={setInvestPlan} setSavings={setSavings} savings={savings} showToast={showToast} setDeletedInvestItemIds={setDeletedInvestItemIds} />
       )}
 
       {subTab === "holdings" && (
-        <PortfolioHoldingsPanel holdings={holdings} setHoldings={setHoldings} />
+        <PortfolioHoldingsPanel holdings={holdings} setHoldings={setHoldings} setDeletedHoldingIds={setDeletedHoldingIds} showToast={showToast} />
       )}
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- */
-function DebtsTab({ debts, setDebts, creditCards, setTransactions, setDeletedDebtIds }) {
+function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, setDeletedDebtIds, setPlanOverrides, showToast }) {
   const [debtType, setDebtType] = useState("other");
   const [selectedCard, setSelectedCard] = useState(creditCards[0]?.name || "");
   const [name, setName] = useState("");
@@ -1776,6 +1883,7 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions, setDeletedDeb
     if (debtType === "credit") item.card = selectedCard;
     setDebts((prev) => [item, ...prev]);
     setName(""); setAmount("");
+    showToast("บันทึกรายการสำเร็จ ✓");
   }
   function remove(id) {
     setDebts((prev) => {
@@ -1793,51 +1901,103 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions, setDeletedDeb
       setDeletedDebtIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
       return prev.filter((d) => d.id !== id);
     });
+    showToast("ลบรายการสำเร็จ ✓");
   }
   function updateAmount(id, val) {
     const amt = parseFloat(val);
     if (isNaN(amt) || amt < 0) return;
     setDebts((prev) => prev.map((d) => (d.id === id ? { ...d, amount: amt, amountOverridden: d.auto ? true : d.amountOverridden } : d)));
   }
-  function logPaymentTransaction(d) {
-    const isCredit = !!d.card;
+  function logPaymentTransaction(d, paymentInfo) {
+    const isCreditDebt = !!d.card;
     setTransactions((prev) => [{
       id: uid(), type: "expense",
-      category: isCredit ? "creditcard" : "others",
+      category: isCreditDebt ? "creditcard" : "others",
       subcategory: null,
       amount: d.amount,
       date: todayStr(),
-      payment: "transfer",
+      payment: paymentInfo.payment,
+      bank: paymentInfo.payment === "transfer" ? paymentInfo.bank : null,
       card: null,
       note: d.name,
     }, ...prev]);
   }
-  function togglePaid(id) {
+  function togglePaid(id, paymentInfo) {
     setDebts((prev) => prev.map((d) => {
       if (d.id !== id) return d;
       const nowPaid = !d.paid;
-      if (nowPaid) logPaymentTransaction(d);
+      if (nowPaid) logPaymentTransaction(d, paymentInfo);
+      if (nowPaid && d.id === HOME_LOAN_DEBT_ID) {
+        // Feed the actual paid amount (respecting any manual edit here)
+        // back into the Home Loan page's per-month override, so its
+        // amortization schedule/remaining-balance reflect what was really
+        // paid — extra principal or a short payment — not just the
+        // standard installment amount.
+        const ym = d.dueDate.slice(0, 7);
+        setPlanOverrides((prev2) => ({ ...prev2, [ym]: { ...(prev2[ym] || {}), [HOME_LOAN_FIXCOST_ID]: d.amount } }));
+      }
       if (nowPaid && d.recurring) {
         const next = parseLocalDate(d.dueDate); next.setMonth(next.getMonth() + 1);
         return { ...d, paid: false, dueDate: toLocalDateStr(next) };
       }
       return { ...d, paid: nowPaid };
     }));
+    if (paymentInfo) showToast("บันทึกการชำระสำเร็จ ✓");
+  }
+  // Marking a debt as paid needs to know which real payment channel was
+  // used so the auto-logged transaction (and any bank-balance deduction)
+  // is accurate — so it opens a small picker instead of assuming "transfer"
+  // blindly like before. Un-checking (reverting to unpaid) needs no picker.
+  const [pendingPayId, setPendingPayId] = useState(null);
+  const [payMethod, setPayMethod] = useState(null);
+  const [payBank, setPayBank] = useState(null);
+  function startPay(d) {
+    if (d.paid) { togglePaid(d.id); return; }
+    setPendingPayId(d.id); setPayMethod(null); setPayBank(null);
+  }
+  function confirmPay() {
+    if (!payMethod) return;
+    togglePaid(pendingPayId, { payment: payMethod, bank: payMethod === "transfer" ? payBank : null });
+    setPendingPayId(null);
   }
 
   const sorted = [...debts].filter((d) => !d.dismissed).sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1));
 
   const now = new Date();
+  // A recurring debt only ever exists as ONE object with one due date —
+  // it only rolls forward once you actually mark it paid. So for planning
+  // purposes (the summary cards / a future month's list), we need to
+  // *project* a virtual occurrence into a later month, same day-of-month,
+  // without creating any real record until that cycle is actually reached.
+  function projectForMonth(d, targetYm) {
+    const ownYm = d.dueDate.slice(0, 7);
+    if (ownYm === targetYm) return d;
+    if (d.recurring && !d.paid && ownYm < targetYm) {
+      const day = parseLocalDate(d.dueDate).getDate();
+      const [ty, tm] = targetYm.split("-").map(Number);
+      const lastDay = new Date(ty, tm, 0).getDate();
+      const projectedDate = toLocalDateStr(new Date(ty, tm - 1, Math.min(day, lastDay)));
+      return { ...d, id: d.id + "-proj-" + targetYm, dueDate: projectedDate, projected: true };
+    }
+    return null;
+  }
+  function monthHasDebt(ym) {
+    return debts.some((d) => !d.dismissed && !d.paid && projectForMonth(d, ym) !== null);
+  }
   const summarize = (ym) => {
-    const items = debts.filter((d) => !d.paid && !d.dismissed && d.dueDate.slice(0, 7) === ym);
+    const items = debts.filter((d) => !d.dismissed && !d.paid).map((d) => projectForMonth(d, ym)).filter(Boolean);
     return { total: items.reduce((a, d) => a + Number(d.amount), 0), count: items.length };
   };
-  // Show the soonest months that actually have something owed — a month
-  // with everything already paid/dismissed (like a September that's fully
-  // settled) is skipped entirely rather than showing a zero card for it.
-  const upcomingYms = Array.from(new Set(
-    debts.filter((d) => !d.paid && !d.dismissed).map((d) => d.dueDate.slice(0, 7))
-  )).sort().slice(0, 2);
+  // Show the soonest months that actually have something owed — checking a
+  // forward-looking window (not just months that already have a real
+  // record) so a recurring bill correctly projects into months it hasn't
+  // technically reached yet. Genuinely overdue real debts still take
+  // priority since they're the most urgent.
+  const overdueYms = Array.from(new Set(
+    debts.filter((d) => !d.paid && !d.dismissed && d.dueDate.slice(0, 7) < ymOf(now)).map((d) => d.dueDate.slice(0, 7))
+  ));
+  const forwardYms = Array.from({ length: 6 }, (_, i) => ymOf(new Date(now.getFullYear(), now.getMonth() + i, 1)));
+  const upcomingYms = Array.from(new Set([...overdueYms, ...forwardYms])).sort().filter(monthHasDebt).slice(0, 2);
   const upcomingSummaries = upcomingYms.map((ym) => {
     const [y, m] = ym.split("-").map(Number);
     return { ym, name: MONTH_FULL_TH[m - 1], year: y, ...summarize(ym) };
@@ -1846,11 +2006,50 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions, setDeletedDeb
   // narrows the list to that month; it defaults to the soonest upcoming one.
   const [selectedYm, setSelectedYm] = useState(null);
   const effectiveYm = selectedYm === "__all__" ? null : (selectedYm || upcomingYms[0] || null);
-  const listForMonth = effectiveYm ? sorted.filter((d) => d.dueDate.slice(0, 7) === effectiveYm) : sorted;
+  const listForMonth = effectiveYm
+    ? debts.filter((d) => !d.dismissed).map((d) => projectForMonth(d, effectiveYm)).filter(Boolean).sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1))
+    : sorted;
   const selectedMonthLabel = effectiveYm ? (() => { const [y, m] = effectiveYm.split("-").map(Number); return `${MONTH_FULL_TH[m - 1]}${y !== now.getFullYear() ? ` ${y + 543}` : ""}`; })() : null;
 
   return (
     <div className="flex flex-col gap-4">
+      {pendingPayId && (() => {
+        const payingDebt = debts.find((d) => d.id === pendingPayId);
+        if (!payingDebt) return null;
+        return (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setPendingPayId(null)}>
+            <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-1">
+                <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">เลือกช่องทางชำระ</p>
+                <button onClick={() => setPendingPayId(null)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
+              </div>
+              <p className="text-xs mb-4" style={{ color: C.inkSoft }}>{payingDebt.name} · {fmtTHB(payingDebt.amount)}</p>
+              <div className="grid grid-cols-2 gap-2.5 mb-4">
+                <button onClick={() => { setPayMethod("cash"); setPayBank(null); }} style={{ background: payMethod === "cash" ? C.purple : C.graySoft, color: payMethod === "cash" ? "#fff" : C.inkSoft }} className="flex flex-col items-center gap-1.5 py-3 rounded-2xl text-xs font-bold">
+                  <Banknote size={18} />เงินสด
+                </button>
+                <button onClick={() => setPayMethod("transfer")} style={{ background: payMethod === "transfer" ? C.purple : C.graySoft, color: payMethod === "transfer" ? "#fff" : C.inkSoft }} className="flex flex-col items-center gap-1.5 py-3 rounded-2xl text-xs font-bold">
+                  <Landmark size={18} />โอนเงิน
+                </button>
+              </div>
+              {payMethod === "transfer" && banks.length > 0 && (
+                <div className="mb-4">
+                  <p className="text-xs font-bold mb-2" style={{ color: C.inkSoft }}>เลือกธนาคาร (ไม่บังคับ)</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button onClick={() => setPayBank(null)} style={{ background: !payBank ? C.purple : C.graySoft, color: !payBank ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">ไม่ระบุ</button>
+                    {banks.map((b) => (
+                      <button key={b.name} onClick={() => setPayBank(b.name)} style={{ background: payBank === b.name ? b.color : C.graySoft, color: payBank === b.name ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">{b.name}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <button onClick={confirmPay} disabled={!payMethod} style={{ background: payMethod ? `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` : C.graySoft, color: payMethod ? "#fff" : C.inkSoft }} className="w-full py-2.5 rounded-full text-sm font-bold">
+                ยืนยันชำระแล้ว
+              </button>
+            </div>
+          </div>
+        );
+      })()}
       {upcomingSummaries.length === 0 ? (
         <div style={{ background: C.tealSoft }} className="rounded-3xl p-4 text-center">
           <p className="text-sm font-bold" style={{ color: C.teal }}>ไม่มียอดที่ต้องชำระตอนนี้ 🎉</p>
@@ -1913,30 +2112,35 @@ function DebtsTab({ debts, setDebts, creditCards, setTransactions, setDeletedDeb
             {(selectedYm === "__all__" ? sorted : listForMonth).map((d) => {
               const diff = daysUntil(d.dueDate);
               let chipBg = C.graySoft, chipColor = C.inkSoft, statusText = `อีก ${diff} วัน`;
-              if (d.paid) { chipBg = C.tealSoft; chipColor = C.teal; statusText = "ชำระแล้ว"; }
+              if (d.projected) { chipBg = C.purpleSoft; chipColor = C.purple; statusText = "คาดการณ์"; }
+              else if (d.paid) { chipBg = C.tealSoft; chipColor = C.teal; statusText = "ชำระแล้ว"; }
               else if (diff < 0) { chipBg = C.coralSoft; chipColor = C.coral; statusText = `เลย ${Math.abs(diff)} วัน`; }
               else if (diff <= 3) { chipBg = C.yellowSoft; chipColor = C.yellowDeep; statusText = diff === 0 ? "วันนี้" : `อีก ${diff} วัน`; }
               return (
-                <div key={d.id} style={{ background: C.card }} className="flex items-center gap-3 px-3.5 py-3 rounded-2xl shadow-sm">
-                  <button onClick={() => togglePaid(d.id)} style={{ color: d.paid ? C.teal : C.graySoft }} className="shrink-0"><CheckCircle2 size={22} /></button>
+                <div key={d.id} style={{ background: C.card, opacity: d.projected ? 0.7 : 1 }} className="flex items-center gap-3 px-3.5 py-3 rounded-2xl shadow-sm">
+                  <button onClick={() => !d.projected && startPay(d)} disabled={d.projected} style={{ color: d.paid ? C.teal : C.graySoft, cursor: d.projected ? "default" : "pointer" }} className="shrink-0"><CheckCircle2 size={22} /></button>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-bold truncate flex items-center gap-1.5" style={{ textDecoration: d.paid ? "line-through" : "none" }}>
                       {d.card && (() => { const cm = cardMeta(creditCards, d.card); const CIcon = resolveIcon(cm.icon); return <CIcon size={12} color={cm.color} className="shrink-0" />; })()}
                       {d.name}{d.recurring ? " (รายเดือน)" : ""}{d.auto ? " · อัตโนมัติ" : ""}
                     </p>
-                    <p className="text-xs" style={{ color: C.inkSoft }}>ครบกำหนด {thDate(d.dueDate)}</p>
+                    <p className="text-xs" style={{ color: C.inkSoft }}>{d.projected ? "คาดว่าจะครบกำหนด" : "ครบกำหนด"} {thDate(d.dueDate)}</p>
                   </div>
                   <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-bold whitespace-nowrap px-2.5 py-1 rounded-full shrink-0">{statusText}</span>
-                  <input type="number" min="0" defaultValue={d.amount} key={d.id + "-amt-" + d.amount}
-                    onBlur={(e) => updateAmount(d.id, e.target.value)}
-                    style={{ ...inputStyle, width: 92, padding: "6px 8px", fontFamily: "'Prompt', sans-serif", fontWeight: 700, textAlign: "right" }} />
-                  <button onClick={() => remove(d.id)} style={{ color: C.gray }} className="p-1 shrink-0"><Trash2 size={14} /></button>
+                  {d.projected ? (
+                    <p style={{ fontFamily: "'Prompt', sans-serif", width: 92, textAlign: "right" }} className="text-sm font-bold shrink-0">{fmtTHB(d.amount)}</p>
+                  ) : (
+                    <input type="number" min="0" defaultValue={d.amount} key={d.id + "-amt-" + d.amount}
+                      onBlur={(e) => updateAmount(d.id, e.target.value)}
+                      style={{ ...inputStyle, width: 92, padding: "6px 8px", fontFamily: "'Prompt', sans-serif", fontWeight: 700, textAlign: "right" }} />
+                  )}
+                  <button onClick={() => !d.projected && remove(d.id)} disabled={d.projected} style={{ color: d.projected ? C.graySoft : C.gray }} className="p-1 shrink-0"><Trash2 size={14} /></button>
                 </div>
               );
             })}
           </div>
         )}
-        <p className="text-[11px] mt-2.5" style={{ color: C.inkSoft }}>แก้ไขยอดได้ตรงๆ ในช่องตัวเลข (ยอดบัตรเครดิตที่ซิงก์อัตโนมัติจะไม่ถูกคำนวณทับอีกหลังแก้ไข) กดติ๊กถูกเมื่อชำระแล้ว ระบบจะบันทึกเป็นรายการรายจ่ายในหน้า "รายรับ-จ่าย" ให้อัตโนมัติ (บัตรเครดิต → หมวด Credit Card, หนี้ทั่วไป → หมวดอื่นๆ พร้อมชื่อรายการในโน้ต)</p>
+        <p className="text-[11px] mt-2.5" style={{ color: C.inkSoft }}>แก้ไขยอดได้ตรงๆ ในช่องตัวเลข (ยอดบัตรเครดิต/ผ่อนบ้านที่ซิงก์อัตโนมัติจะไม่ถูกคำนวณทับอีกหลังแก้ไข) กดติ๊กถูกเมื่อชำระแล้วจะให้เลือกช่องทางชำระก่อน แล้วระบบจะบันทึกเป็นรายการรายจ่ายในหน้า "รายรับ-จ่าย" ให้อัตโนมัติตามช่องทางที่เลือก (บัตรเครดิต → หมวด Credit Card, หนี้ทั่วไป → หมวดอื่นๆ พร้อมชื่อรายการในโน้ต) ค่างวดผ่อนบ้านจะถูกตั้งเป็นรายการหนี้รายเดือนให้อัตโนมัติจากหน้า "Home Loan" เช่นกัน รายการที่ขึ้น "คาดการณ์" คือบิลรายเดือนที่จะครบกำหนดในเดือนนั้นๆ ตามรอบ แต่ยังไม่ใช่รายการจริงจนกว่าจะถึงรอบและจ่ายรอบก่อนหน้าแล้ว</p>
       </div>
     </div>
   );
@@ -2023,25 +2227,6 @@ function MonthlyPlanTab({
   const extraIncomeLogged = monthTx.filter((t) => t.type === "income").reduce((a, t) => a + Number(t.amount), 0);
 
   const remainingNow = budgetedBalance - actualCash;
-
-  // auto-sync savings/invest targets into the Savings & Investment tab for this month
-  useEffect(() => {
-    setSavings((prev) => {
-      let next = [...prev];
-      let changed = false;
-      [
-        ["plan-saving-" + ym, "saving", savingAmt, `เงินออมตามแผน (${monthLabel(ym)})`],
-        ["plan-invest-" + ym, "investment", investAmt, `เงินลงทุนตามแผน (${monthLabel(ym)})`],
-      ].forEach(([id, kind, amt, name]) => {
-        const idx = next.findIndex((s) => s.id === id);
-        if (amt > 0) {
-          if (idx === -1) { next.push({ id, kind, name, amount: amt, date: ym + "-01", target: null, auto: true }); changed = true; }
-          else if (next[idx].amount !== amt) { next[idx] = { ...next[idx], amount: amt }; changed = true; }
-        } else if (idx !== -1) { next.splice(idx, 1); changed = true; }
-      });
-      return changed ? next : prev;
-    });
-  }, [savingAmt, investAmt, ym, setSavings]);
 
   function shiftMonth(delta) { setYm((prev) => addMonths(prev, delta)); }
 
@@ -2350,7 +2535,7 @@ function freqLabel(n) {
   return n === 1 ? "ทุกเดือน" : `ทุก ${n} เดือน`;
 }
 
-function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings }) {
+function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, showToast, setDeletedInvestItemIds }) {
   const { totalPool, items } = investPlan;
   const [subView, setSubView] = useState("items");
   const [name, setName] = useState("");
@@ -2387,8 +2572,13 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings })
     };
     setInvestPlan((p) => ({ ...p, items: [...p.items, item] }));
     setName(""); setCategory(""); setValue("");
+    showToast("บันทึกรายการสำเร็จ ✓");
   }
-  function removeItem(id) { setInvestPlan((p) => ({ ...p, items: p.items.filter((i) => i.id !== id) })); }
+  function removeItem(id) {
+    setInvestPlan((p) => ({ ...p, items: p.items.filter((i) => i.id !== id) }));
+    setDeletedInvestItemIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    showToast("ลบรายการสำเร็จ ✓");
+  }
   function updateItem(id, patch) {
     setInvestPlan((p) => ({ ...p, items: p.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
   }
@@ -2770,7 +2960,7 @@ function InvestSummary({ savings }) {
 /* ---------------------------------------------------------------- */
 /*  Current Portfolio Holdings — invested amount vs. current value   */
 /* ---------------------------------------------------------------- */
-function PortfolioHoldingsPanel({ holdings, setHoldings }) {
+function PortfolioHoldingsPanel({ holdings, setHoldings, setDeletedHoldingIds, showToast }) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
   const [invested, setInvested] = useState("");
@@ -2783,8 +2973,13 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
     const cur = current !== "" ? parseFloat(current) : inv;
     setHoldings((prev) => [{ id: uid(), name: name.trim(), category: category.trim() || "อื่นๆ", invested: inv, current: cur, date }, ...prev]);
     setName(""); setCategory(""); setInvested(""); setCurrent("");
+    showToast("บันทึกรายการสำเร็จ ✓");
   }
-  function remove(id) { setHoldings((prev) => prev.filter((h) => h.id !== id)); }
+  function remove(id) {
+    setHoldings((prev) => prev.filter((h) => h.id !== id));
+    setDeletedHoldingIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    showToast("ลบรายการสำเร็จ ✓");
+  }
   function updateCurrent(id, val) {
     const v = parseFloat(val);
     if (isNaN(v)) return;
@@ -2900,7 +3095,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings }) {
 /* ---------------------------------------------------------------- */
 /*  Home Loan Planning — amortization monitor & fix-cost sync        */
 /* ---------------------------------------------------------------- */
-function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverrides, planFixCostItems, setPlanFixCostItems }) {
+function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverrides, planFixCostItems, setPlanFixCostItems, debts, showToast }) {
   const [editing, setEditing] = useState(!homeLoan.active);
   const [name, setName] = useState(homeLoan.name);
   const [principal, setPrincipal] = useState(homeLoan.principal || "");
@@ -2915,14 +3110,20 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
 
   const schedule = useMemo(() => buildAmortizationSchedule(homeLoan, planOverrides), [homeLoan, planOverrides]);
   const currentYm = ymOf(new Date());
-  const currentRowIndex = schedule.findIndex((r) => r.ym >= currentYm);
+  // "Current" installment tracks the actual Debts entry, not the calendar —
+  // its dueDate only advances once you mark it paid there, so if a month is
+  // still outstanding in Debts, it stays the "current" one here too.
+  const loanDebt = debts?.find((d) => d.id === HOME_LOAN_DEBT_ID);
+  const unpaidSinceYm = loanDebt && !loanDebt.paid ? loanDebt.dueDate.slice(0, 7) : currentYm;
+  const isOverdue = unpaidSinceYm < currentYm;
+  const currentRowIndex = schedule.findIndex((r) => r.ym >= unpaidSinceYm);
   const paidOff = homeLoan.active && schedule.length > 0 && currentRowIndex === -1;
   const remainingInstallments = currentRowIndex === -1 ? 0 : schedule.length - currentRowIndex;
   const payoffYm = schedule.length ? schedule[schedule.length - 1].ym : null;
   const currentRemaining = paidOff ? 0 : currentRowIndex === -1 ? homeLoan.principal : currentRowIndex === 0 ? homeLoan.principal : schedule[currentRowIndex - 1].remaining;
-  const interestPaidSoFar = schedule.filter((r) => r.ym < currentYm).reduce((a, r) => a + r.interest, 0);
-  const interestRemaining = schedule.filter((r) => r.ym >= currentYm).reduce((a, r) => a + r.interest, 0);
-  const currentRate = rateForMonth(homeLoan.rateChanges, currentYm);
+  const interestPaidSoFar = schedule.filter((r) => r.ym < unpaidSinceYm).reduce((a, r) => a + r.interest, 0);
+  const interestRemaining = schedule.filter((r) => r.ym >= unpaidSinceYm).reduce((a, r) => a + r.interest, 0);
+  const currentRate = rateForMonth(homeLoan.rateChanges, unpaidSinceYm);
   const hitCap = homeLoan.active && schedule.length >= 600;
   const syncedInFixCost = planFixCostItems.some((i) => i.id === HOME_LOAN_FIXCOST_ID);
 
@@ -2968,9 +3169,11 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
     if (isNaN(r) || r < 0) return;
     setHomeLoan((p) => ({ ...p, rateChanges: [...(p.rateChanges || []), { ym: newRateMonth, rate: r }] }));
     setNewRate("");
+    showToast("บันทึกรายการสำเร็จ ✓");
   }
   function removeRateChange(idx) {
     setHomeLoan((p) => ({ ...p, rateChanges: p.rateChanges.filter((_, i) => i !== idx) }));
+    showToast("ลบรายการสำเร็จ ✓");
   }
   function togglePaid(ym) {
     setHomeLoan((p) => {
@@ -3034,6 +3237,11 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
       <div style={{ background: `linear-gradient(135deg, ${C.brown}, #A85F2C)` }} className="rounded-3xl p-5 text-white shadow-sm">
         <p className="text-xs font-semibold opacity-90 mb-1">{paidOff ? "ผ่อนหมดแล้ว 🎉" : "เงินต้นคงเหลือตอนนี้"}</p>
         <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(currentRemaining)}</p>
+        {isOverdue && (
+          <div style={{ background: "rgba(255,255,255,0.22)" }} className="rounded-xl px-3 py-2 mb-3 text-xs font-bold flex items-center gap-1.5">
+            <span>⚠️</span><span>ค้างชำระตั้งแต่งวด {monthLabel(unpaidSinceYm)} — ยังไม่ได้กดติ๊กจ่ายในหน้า "หนี้สิน" ตารางนี้จะค้างรออยู่ที่งวดนี้จนกว่าจะกดจ่าย</span>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-2 text-xs">
           <SummaryMini label="งวดที่เหลือ" value={remainingInstallments} sub="งวด" isText />
           <div style={{ background: "rgba(255,255,255,0.18)" }} className="rounded-xl px-3 py-2">
@@ -3144,7 +3352,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
 /*  Settings — user-editable categories, subcategories, credit cards */
 /*  (per-account, since storage is already isolated per user)        */
 /* ---------------------------------------------------------------- */
-function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, setCreditCards, cardSettings, setCardSettings, banks, setBanks, bankBalances, setBankBalances, transactions, debts, setTransactions, setDebts, setDeletedBankNames, setDeletedCardNames, onClose }) {
+function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, setCreditCards, cardSettings, setCardSettings, banks, setBanks, bankBalances, setBankBalances, transactions, debts, setTransactions, setDebts, setDeletedBankNames, setDeletedCardNames, setDeletedCategoryKeys, showToast, onClose }) {
   const [section, setSection] = useState("categories");
   const [expandedCat, setExpandedCat] = useState(null);
   const [form, setForm] = useState(null);
@@ -3231,11 +3439,13 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
     if (form.mode === "newCat") {
       const key = "cat_" + uid();
       setExpenseCategories((prev) => [...prev, { key, label: form.name.trim(), icon: form.icon, color: form.color, subcategories: [] }]);
+      showToast("บันทึกรายการสำเร็จ ✓");
     } else if (form.mode === "editCat") {
       setExpenseCategories((prev) => prev.map((c) => (c.key === form.catKey ? { ...c, label: form.name.trim(), icon: form.icon, color: form.color } : c)));
     } else if (form.mode === "newSub") {
       const key = "sub_" + uid();
       setExpenseCategories((prev) => prev.map((c) => (c.key === form.catKey ? { ...c, subcategories: [...(c.subcategories || []), { key, label: form.name.trim(), icon: form.icon, color: form.color }] } : c)));
+      showToast("บันทึกรายการสำเร็จ ✓");
     } else if (form.mode === "editSub") {
       setExpenseCategories((prev) => prev.map((c) => (c.key === form.catKey ? { ...c, subcategories: (c.subcategories || []).map((s) => (s.key === form.subKey ? { ...s, label: form.name.trim(), icon: form.icon, color: form.color } : s)) } : c)));
     } else if (form.mode === "newCard") {
@@ -3244,6 +3454,7 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
         setCreditCards((prev) => [...prev, { name: nm, icon: form.icon, color: form.color }]);
         setCardSettings((prev) => ({ ...prev, [nm]: { cutoffDay: form.cutoffDay, dueDay: form.dueDay } }));
         setDeletedCardNames((prev) => prev.filter((n) => n !== nm));
+        showToast("บันทึกรายการสำเร็จ ✓");
       }
     } else if (form.mode === "editCard") {
       const nm = form.name.trim();
@@ -3274,6 +3485,7 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
       if (!banks.some((b) => b.name === nm)) {
         setBanks((prev) => [...prev, { name: nm, icon: form.icon, color: form.color }]);
         setDeletedBankNames((prev) => prev.filter((n) => n !== nm));
+        showToast("บันทึกรายการสำเร็จ ✓");
       }
     } else if (form.mode === "editBank") {
       const nm = form.name.trim();
@@ -3289,20 +3501,25 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
   function deleteCategory(key) {
     if (expenseCategories.length <= 1) return;
     setExpenseCategories((prev) => prev.filter((c) => c.key !== key));
+    setDeletedCategoryKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+    showToast("ลบรายการสำเร็จ ✓");
   }
   function deleteSub(catKey, subKey) {
     setExpenseCategories((prev) => prev.map((c) => (c.key === catKey ? { ...c, subcategories: (c.subcategories || []).filter((s) => s.key !== subKey) } : c)));
+    showToast("ลบรายการสำเร็จ ✓");
   }
   function deleteBank(name) {
     setBanks((prev) => prev.filter((b) => b.name !== name));
     setBankBalances((prev) => { const next = { ...prev }; delete next[name]; return next; });
     setDeletedBankNames((prev) => (prev.includes(name) ? prev : [...prev, name]));
+    showToast("ลบรายการสำเร็จ ✓");
   }
   function deleteCard(name) {
     if (creditCards.length <= 1) return;
     setCreditCards((prev) => prev.filter((c) => c.name !== name));
     setCardSettings((prev) => { const next = { ...prev }; delete next[name]; return next; });
     setDeletedCardNames((prev) => (prev.includes(name) ? prev : [...prev, name]));
+    showToast("ลบรายการสำเร็จ ✓");
   }
 
   return (
