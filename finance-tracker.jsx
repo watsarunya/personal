@@ -5,7 +5,7 @@ import {
   TrendingUp, TrendingDown, CreditCard, Banknote, ArrowLeftRight,
   CheckCircle2, ChevronLeft, ChevronRight, Flame, Star, Landmark,
   Lock, Award, ShieldCheck, Rocket, PartyPopper, ChevronRight as ChevronR,
-  ClipboardList, Settings, RotateCcw, Percent, ChevronDown, ChevronUp, Info, X,
+  ClipboardList, Settings, RotateCcw, Percent, ChevronDown, ChevronUp, Info, X, SkipForward,
   Clock, Repeat, Tag, PieChart as PieChartIcon, Store, Bike, Package, Pencil
 } from "lucide-react";
 import {
@@ -55,19 +55,20 @@ function resolveIcon(name) { return ICON_LIBRARY[name] || MoreHorizontal; }
 const CATEGORY_COLOR_PALETTE = ["#FF7A59", "#4FB6E8", "#6C5CE7", "#FF6B9D", "#F5AF00", "#9B7BF0", "#2ECC9B", "#C97B3E", "#1DB954", "#5B6BC0", "#6B4EA6", "#B7BACB"];
 
 const DEFAULT_EXPENSE_CATEGORIES = [
-  { key: "food", label: "อาหาร", icon: "Utensils", color: "#FF7A59", subcategories: [
+  { key: "food", label: "Food", icon: "Utensils", color: "#FF7A59", subcategories: [
     { key: "seven11", label: "7-Eleven", icon: "Store", color: "#C97B3E" },
     { key: "grab", label: "Grab", icon: "Bike", color: "#1DB954" },
-    { key: "drink", label: "เครื่องดื่ม", icon: "Coffee", color: "#4FB6E8" },
+    { key: "drink", label: "Drinks", icon: "Coffee", color: "#4FB6E8" },
     { key: "lineman", label: "Lineman", icon: "Package", color: "#5B6BC0" },
   ] },
-  { key: "car", label: "รถยนต์", icon: "Car", color: "#6C5CE7" },
-  { key: "beauty", label: "ความงาม", icon: "Sparkles", color: "#FF6B9D" },
-  { key: "home", label: "บ้าน", icon: "Home", color: "#F5AF00" },
-  { key: "cat", label: "แมว", icon: "Cat", color: "#9B7BF0" },
-  { key: "exercise", label: "ออกกำลังกาย", icon: "Dumbbell", color: "#2ECC9B" },
+  { key: "car", label: "Car", icon: "Car", color: "#6C5CE7" },
+  { key: "beauty", label: "Beauty", icon: "Sparkles", color: "#FF6B9D" },
+  { key: "home", label: "Home", icon: "Home", color: "#F5AF00" },
+  { key: "cat", label: "Cat", icon: "Cat", color: "#9B7BF0" },
+  { key: "exercise", label: "Fitness", icon: "Dumbbell", color: "#2ECC9B" },
   { key: "creditcard", label: "Credit Card", icon: "CreditCard", color: "#6B4EA6" },
-  { key: "others", label: "อื่นๆ", icon: "MoreHorizontal", color: "#B7BACB" },
+  { key: "investment", label: "Investment", icon: "TrendingUp", color: "#4FB6E8" },
+  { key: "others", label: "Other", icon: "MoreHorizontal", color: "#B7BACB" },
 ];
 const DEFAULT_CREDIT_CARDS = [
   { name: "SCB", icon: "Landmark", color: "#6C5CE7" },
@@ -117,6 +118,54 @@ function bankTransferDelta(transactions, bankName) {
 function computeBankBalance(transactions, bankBalances, bankName) {
   return (bankBalances[bankName] || 0) + bankTransferDelta(transactions, bankName);
 }
+// A card's owed amount is a running balance (like a bank balance), minus
+// whatever's already been paid off — but it must still respect each card's
+// own statement cutoff day: a transaction dated after the cutoff that
+// closes the statement leading to the CURRENT due date belongs to the
+// NEXT cycle, and must not count toward what's due right now.
+function cardTransactionTotal(transactions, cardName) {
+  return transactions.reduce((sum, t) => {
+    if (t.type === "expense" && t.payment === "credit" && t.card === cardName) return sum + Number(t.amount);
+    return sum;
+  }, 0);
+}
+// The due date for a statement in month M is always the cutoff of month
+// M-1 (charges up to that cutoff are billed, due the following month).
+function cardCutoffBoundaryForDueYm(cardSettings, cardName, dueDateYm) {
+  const cutoffDay = Math.min(cardSettings[cardName]?.cutoffDay ?? 25, 28);
+  const cutoffYm = addMonths(dueDateYm, -1);
+  return dateForDayInMonth(cutoffYm, cutoffDay);
+}
+function cardBilledTotal(transactions, cardSettings, cardName, dueDateYm) {
+  const boundary = cardCutoffBoundaryForDueYm(cardSettings, cardName, dueDateYm);
+  return transactions.reduce((sum, t) => {
+    if (t.type === "expense" && t.payment === "credit" && t.card === cardName && t.date <= boundary) return sum + Number(t.amount);
+    return sum;
+  }, 0);
+}
+function computeCardOwed(transactions, cardOwedBaseline, cardSettings, cardName, dueDateYm) {
+  return Math.max(0, cardBilledTotal(transactions, cardSettings, cardName, dueDateYm) - (cardOwedBaseline[cardName] || 0));
+}
+function monthsBetweenYm(fromYm, toYm) {
+  const [fy, fm] = fromYm.split("-").map(Number);
+  const [ty, tm] = toYm.split("-").map(Number);
+  return (ty - fy) * 12 + (tm - fm);
+}
+// A line item (manually-added card installment) only counts toward the
+// card's total once its own start cycle has arrived, and — if it has a
+// fixed installment count — only for that many cycles. This is what makes
+// a newly-added plan apply from next month's bill, not retroactively pad
+// the cycle that's already in progress.
+function lineItemActiveFor(li, cycleYm) {
+  if (!li.startYm) return true; // pre-existing item from before installment tracking existed
+  const elapsed = monthsBetweenYm(li.startYm, cycleYm);
+  if (elapsed < 0) return false;
+  if (li.totalInstallments == null) return true;
+  return elapsed < li.totalInstallments;
+}
+function activeLineItemsTotal(lineItems, cycleYm) {
+  return (lineItems || []).filter((li) => lineItemActiveFor(li, cycleYm)).reduce((a, li) => a + Number(li.amount), 0);
+}
 // Cash works like a bank balance (anchor + net delta), but since
 // payment==='cash' already existed on every transaction (not a new field),
 // this naturally includes the full cash history, not just new records.
@@ -148,9 +197,9 @@ function categoryColor(categories, key) {
   return C.gray;
 }
 const INCOME_CATEGORIES = [
-  { key: "salary", label: "เงินเดือน", icon: "Landmark", color: "#2ECC9B" },
-  { key: "extra", label: "รายได้เสริม", icon: "TrendingUp", color: "#4FB6E8" },
-  { key: "other_income", label: "อื่นๆ", icon: "MoreHorizontal", color: "#B7BACB" },
+  { key: "salary", label: "Salary", icon: "Landmark", color: "#2ECC9B" },
+  { key: "extra", label: "Side Income", icon: "TrendingUp", color: "#4FB6E8" },
+  { key: "other_income", label: "Other", icon: "MoreHorizontal", color: "#B7BACB" },
 ];
 
 const TAB_COLOR = {
@@ -158,9 +207,9 @@ const TAB_COLOR = {
   debts: C.yellowDeep, budgets: C.blue, plan: C.pink, homeLoan: C.brown,
 };
 
-const INCOME_TYPE_PRESETS = ["เงินเดือนหลัก", "รายได้เสริม", "โบนัส", "ธุรกิจส่วนตัว", "อื่นๆ"];
-const FIXCOST_TYPE_PRESETS = ["ค่าเช่า/ผ่อนบ้าน", "ค่าน้ำ-ไฟ-เน็ต", "ประกัน", "ผ่อนรถ", "สมาชิก/สับสคริปชัน", "ค่าเทอม", "อื่นๆ"];
-const INVEST_CATEGORY_PRESETS = ["หุ้น", "กองทุนรวม", "ทองคำ", "คริปโทเคอร์เรนซี", "พันธบัตร/ตราสารหนี้", "ประกันสะสมทรัพย์", "อสังหาริมทรัพย์", "อื่นๆ"];
+const INCOME_TYPE_PRESETS = ["Main Salary", "Side Income", "Bonus", "Own Business", "Other"];
+const FIXCOST_TYPE_PRESETS = ["Rent/Home Loan", "Utilities & Internet", "Insurance", "Car Loan", "Membership/Subscription", "Tuition", "Other"];
+const INVEST_CATEGORY_PRESETS = ["Stocks", "Mutual Fund", "Gold", "Cryptocurrency", "Bonds/Fixed Income", "Endowment Insurance", "Real Estate", "Other"];
 const PROFILE_COLORS = [C.purple, C.coral, C.teal, C.blue, C.pink, C.yellowDeep, C.brown, "#9B7BF0"];
 function profileById(profiles, id) { return profiles.find((p) => p.id === id) || null; }
 const INVEST_PALETTE = [C.purple, C.teal, C.blue, C.coral, C.pink, C.yellowDeep, "#9B7BF0", C.gray];
@@ -170,13 +219,13 @@ function investItemAmount(item, totalPool, ym, overrides) {
   return item.mode === "percent" ? (Number(totalPool) || 0) * (Number(item.value) || 0) / 100 : (Number(item.value) || 0);
 }
 function investItemStatus(item) {
-  if (item.executed) return { level: "done", text: "ลงทุนแล้ว" };
+  if (item.executed) return { level: "done", text: "Invested" };
   const diff = daysUntil(item.date);
   const nowTime = new Date().toTimeString().slice(0, 5);
-  if (diff < 0) return { level: "hot", text: `เลยกำหนด ${Math.abs(diff)} วัน` };
-  if (diff === 0) return item.time && nowTime < item.time ? { level: "warn", text: `วันนี้ เวลา ${item.time}` } : { level: "hot", text: "ถึงเวลาแล้ว" };
-  if (diff <= 2) return { level: "warn", text: `อีก ${diff} วัน` };
-  return { level: "ok", text: `อีก ${diff} วัน` };
+  if (diff < 0) return { level: "hot", text: `Overdue ${Math.abs(diff)} days` };
+  if (diff === 0) return item.time && nowTime < item.time ? { level: "warn", text: `Today at ${item.time}` } : { level: "hot", text: "Time's up" };
+  if (diff <= 2) return { level: "warn", text: `${diff} days left` };
+  return { level: "ok", text: `${diff} days left` };
 }
 
 function pad2(n) { return String(n).padStart(2, "0"); }
@@ -185,7 +234,7 @@ function parseLocalDate(s) { const [y, m, d] = s.split("-").map(Number); return 
 function ymOf(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1); }
 function monthLabel(ym) {
   const [y, m] = ym.split("-").map(Number);
-  return new Date(y, m - 1, 1).toLocaleDateString("th-TH", { month: "long", year: "numeric" });
+  return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
 }
 function addMonths(ym, delta) {
   const [y, m] = ym.split("-").map(Number);
@@ -247,7 +296,7 @@ function buildAmortizationSchedule(loan, planOverrides) {
 
 function fmtTHB(n) {
   const v = Number(n) || 0;
-  return "฿" + v.toLocaleString("th-TH", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  return "฿" + v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 function todayStr() { return toLocalDateStr(new Date()); }
 // Data retention: transactions older than 6 months are permanently purged
@@ -259,7 +308,7 @@ function retentionCutoffStr() {
   return toLocalDateStr(d);
 }
 function thDate(d) {
-  try { return parseLocalDate(d).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }); }
+  try { return parseLocalDate(d).toLocaleDateString("en-US", { day: "numeric", month: "short", year: "2-digit" }); }
   catch { return d; }
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
@@ -360,6 +409,11 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
   const [deletedSavingsIds, setDeletedSavingsIds] = useState([]);
   const [deletedHoldingIds, setDeletedHoldingIds] = useState([]);
   const [deletedInvestItemIds, setDeletedInvestItemIds] = useState([]);
+  // Each card's debt entry is now a persistent running balance (like a bank
+  // balance) rather than one entry per statement cycle: baseline tracks how
+  // much of the card's total transaction history has already been paid off,
+  // so owed = (all credit transactions for that card) - baseline.
+  const [cardOwedBaseline, setCardOwedBaseline] = useState({});
   // Cash-on-hand works the same way as a bank balance: an anchor the user
   // sets directly, plus the net effect of every cash transaction — but
   // unlike banks (a new field old transactions never had), payment==='cash'
@@ -427,6 +481,7 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
         setDeletedBankNames(bankTombstones);
         if (data.banks) setBanks(data.banks.filter((b) => !bankTombstones.includes(b.name)));
         if (data.bankBalances) setBankBalances(data.bankBalances);
+        if (data.cardOwedBaseline) setCardOwedBaseline(data.cardOwedBaseline);
         if (typeof data.cashBalance === "number") setCashBalance(data.cashBalance);
       }
     } catch (e) { /* fresh start / offline */ }
@@ -460,7 +515,7 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
     const t = setTimeout(async () => {
       const localBlob = {
         transactions, savings, debts, budgets,
-        planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards, deletedDebtIds, banks, bankBalances, deletedBankNames, deletedCardNames, cashBalance, deletedCategoryKeys, deletedTransactionIds, deletedSavingsIds, deletedHoldingIds, deletedInvestItemIds,
+        planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards, deletedDebtIds, banks, bankBalances, deletedBankNames, deletedCardNames, cashBalance, deletedCategoryKeys, deletedTransactionIds, deletedSavingsIds, deletedHoldingIds, deletedInvestItemIds, cardOwedBaseline,
       };
       try {
         // Read the latest remote data first and merge it with what we're
@@ -496,6 +551,7 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
           deletedDebtIds: mergedDeletedDebtIds,
           banks: mergeArraysById(banks, remote.banks, "name").filter((b) => !mergedDeletedBankNames.includes(b.name)),
           bankBalances: mergeMaps(bankBalances, remote.bankBalances),
+          cardOwedBaseline: mergeMaps(cardOwedBaseline, remote.cardOwedBaseline),
           deletedBankNames: mergedDeletedBankNames,
           deletedCardNames: mergedDeletedCardNames,
           deletedCategoryKeys: mergedDeletedCategoryKeys,
@@ -519,6 +575,7 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
         if (merged.deletedDebtIds.length !== (deletedDebtIds || []).length) setDeletedDebtIds(merged.deletedDebtIds);
         if (merged.banks.length !== banks.length) setBanks(merged.banks);
         if (Object.keys(merged.bankBalances).length !== Object.keys(bankBalances).length) setBankBalances(merged.bankBalances);
+        if (Object.keys(merged.cardOwedBaseline).length !== Object.keys(cardOwedBaseline).length) setCardOwedBaseline(merged.cardOwedBaseline);
         if (merged.deletedBankNames.length !== (deletedBankNames || []).length) setDeletedBankNames(merged.deletedBankNames);
         if (merged.deletedCardNames.length !== (deletedCardNames || []).length) setDeletedCardNames(merged.deletedCardNames);
         if (merged.creditCards.length !== creditCards.length) setCreditCards(merged.creditCards);
@@ -534,7 +591,7 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
       }
     }, 250);
     return () => clearTimeout(t);
-  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards, deletedDebtIds, banks, bankBalances, deletedBankNames, deletedCardNames, cashBalance, deletedCategoryKeys, deletedTransactionIds, deletedSavingsIds, deletedHoldingIds, deletedInvestItemIds]);
+  }, [transactions, savings, debts, budgets, planIncomeItems, planFixCostItems, planOverrides, savingsPlan, cardSettings, investPlan, holdings, homeLoan, dismissedAlerts, profiles, expenseCategories, creditCards, deletedDebtIds, banks, bankBalances, deletedBankNames, deletedCardNames, cashBalance, deletedCategoryKeys, deletedTransactionIds, deletedSavingsIds, deletedHoldingIds, deletedInvestItemIds, cardOwedBaseline]);
 
   // Sync the home loan installment into Monthly Plan's Fix Cost list automatically
   useEffect(() => {
@@ -546,9 +603,9 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
       }
       const schedule = buildAmortizationSchedule(homeLoan, planOverrides);
       const payoffYm = schedule.length ? schedule[schedule.length - 1].ym : null;
-      const itemName = homeLoan.name || "ผ่อนบ้าน";
+      const itemName = homeLoan.name || "Home Loan";
       const item = {
-        id: HOME_LOAN_FIXCOST_ID, name: itemName, type: "ค่าเช่า/ผ่อนบ้าน",
+        id: HOME_LOAN_FIXCOST_ID, name: itemName, type: "Rent/Home Loan",
         amount: homeLoan.payment, recurring: true, startMonth: homeLoan.startMonth, endMonth: payoffYm, auto: true,
       };
       let next = [...prev];
@@ -579,7 +636,7 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
       const idx = prev.findIndex((d) => d.id === HOME_LOAN_DEBT_ID);
       const schedule = homeLoan.active ? buildAmortizationSchedule(homeLoan, planOverrides) : [];
       const payoffYm = schedule.length ? schedule[schedule.length - 1].ym : null;
-      const itemName = homeLoan.name || "ผ่อนบ้าน";
+      const itemName = homeLoan.name || "Home Loan";
       if (!homeLoan.active || !homeLoan.payment) {
         return idx === -1 ? prev : prev.filter((d) => d.id !== HOME_LOAN_DEBT_ID);
       }
@@ -609,74 +666,88 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
     });
   }, [homeLoan, planOverrides]);
 
-  // Sync credit-card spending into debt obligations automatically, grouped by
-  // each card's own statement cycle (cutoff day) rather than calendar month.
+  // Each credit card gets exactly one persistent debt entry — a running
+  // balance (like a bank balance), not one entry per statement cycle. Every
+  // configured card gets an entry even with nothing owed (amount 0), and
+  // manually-added recurring card installments live as lineItems inside
+  // that same entry rather than as separate debts.
   useEffect(() => {
     if (!loadedRef.current) return;
     setDebts((prev) => {
-      const totals = {};
-      transactions.forEach((t) => {
-        if (t.type === "expense" && t.payment === "credit" && t.card) {
-          const cutoffDay = cardSettings[t.card]?.cutoffDay ?? 25;
-          const [y, m, day] = t.date.split("-").map(Number);
-          const txnYm = `${y}-${pad2(m)}`;
-          const statementYm = day <= cutoffDay ? txnYm : addMonths(txnYm, 1);
-          const key = t.card + "|" + statementYm;
-          totals[key] = (totals[key] || 0) + Number(t.amount);
-        }
-      });
       let changed = false;
       let next = [...prev];
-      Object.entries(totals).forEach(([key, amt]) => {
-        const [card, statementYm] = key.split("|");
-        const id = "cc-" + card + "-" + statementYm;
-        const dueYm = addMonths(statementYm, 1);
-        const [dy, dm] = dueYm.split("-").map(Number);
-        const dueDay = Math.min(cardSettings[card]?.dueDay ?? 5, 28);
-        const dueDateStr = toLocalDateStr(new Date(dy, dm - 1, dueDay));
-        const label = `บัตรเครดิต ${card} (รอบตัดยอด ${monthLabel(statementYm)})`;
+      // One-time migration: fold any old-style per-statement-cycle entries
+      // (id "cc-<card>-<yyyy-mm>") into the new model. A PAID old entry
+      // represents a cycle already settled — its amount needs to be baked
+      // into this card's baseline so the new running balance doesn't
+      // double-count it. An UNPAID old entry needs no baseline adjustment
+      // (its transactions are already part of the raw total) — just remove
+      // it so it doesn't show up twice. Removing it locally isn't enough —
+      // without tombstoning the id, a stale remote copy (or another
+      // device/tab that hasn't migrated yet) can resurrect it right back
+      // via the ordinary cross-device merge.
+      const oldStyleRe = /^cc-(.+)-(\d{4}-\d{2})$/;
+      const migratedBaselineBump = {};
+      const migratedAwayIds = [];
+      next = next.filter((d) => {
+        const m = oldStyleRe.exec(d.id);
+        if (!m) return true;
+        const card = m[1];
+        if (d.paid) migratedBaselineBump[card] = (migratedBaselineBump[card] || 0) + Number(d.amount);
+        migratedAwayIds.push(d.id);
+        changed = true;
+        return false;
+      });
+      if (migratedAwayIds.length > 0) {
+        setDeletedDebtIds((prev2) => Array.from(new Set([...prev2, ...migratedAwayIds])));
+      }
+      let baseline = cardOwedBaseline;
+      if (Object.keys(migratedBaselineBump).length > 0) {
+        baseline = { ...cardOwedBaseline };
+        Object.entries(migratedBaselineBump).forEach(([card, amt]) => { baseline[card] = (baseline[card] || 0) + amt; });
+        setCardOwedBaseline(baseline);
+      }
+      creditCards.forEach((c) => {
+        const cardName = c.name;
+        const id = "cc-card-" + cardName;
+        const dueDay = Math.min(cardSettings[cardName]?.dueDay ?? 5, 28);
+        const now = new Date();
+        let candidateYm = ymOf(now);
+        let candidateDate = dateForDayInMonth(candidateYm, dueDay);
+        if (candidateDate < todayStr()) { candidateYm = addMonths(candidateYm, 1); candidateDate = dateForDayInMonth(candidateYm, dueDay); }
+        const autoAmt = computeCardOwed(transactions, baseline, cardSettings, cardName, candidateYm);
+        const existingLineItems = next.find((d) => d.id === id)?.lineItems || [];
+        const lineItemsTotal = activeLineItemsTotal(existingLineItems, candidateYm);
+        const totalAmt = autoAmt + lineItemsTotal;
+        const label = `Credit Card ${cardName}`;
         const idx = next.findIndex((d) => d.id === id);
         if (idx === -1) {
-          next.push({ id, name: label, amount: amt, dueDate: dueDateStr, recurring: false, paid: false, auto: true, card });
+          next.push({ id, name: label, amount: totalAmt, dueDate: candidateDate, recurring: true, paid: false, auto: true, card: cardName, lineItems: [] });
           changed = true;
-        } else if (!next[idx].paid && !next[idx].dismissed) {
+        } else if (!next[idx].dismissed) {
           const updates = {};
-          if (!next[idx].amountOverridden && next[idx].amount !== amt) updates.amount = amt;
-          if (next[idx].dueDate !== dueDateStr) updates.dueDate = dueDateStr;
+          if (next[idx].amount !== totalAmt) updates.amount = totalAmt;
+          if (next[idx].dueDate !== candidateDate) updates.dueDate = candidateDate;
           if (next[idx].name !== label) updates.name = label;
+          if (!next[idx].lineItems) updates.lineItems = [];
           if (Object.keys(updates).length > 0) {
             next[idx] = { ...next[idx], ...updates };
             changed = true;
           }
         }
       });
+      // A card removed from Settings: drop its debt entry too, unless it
+      // still has real state worth keeping (paid history or line items).
       next = next.filter((d) => {
-        if (!d.auto || !d.id.startsWith("cc-")) return true;
-        const statementYm = d.id.slice(("cc-" + d.card + "-").length);
-        if (!(d.card + "|" + statementYm in totals) && !d.paid && !d.amountOverridden && !d.dismissed) { changed = true; return false; }
-        return true;
-      });
-      // Defensive dedupe: two entries should never share the same id, but
-      // a rename that happened before the cascade fix existed could have
-      // left stale duplicates. Keep the most informative copy (paid, or
-      // the one with a manually-corrected amount) and drop the rest.
-      const byId = new Map();
-      next.forEach((d) => {
-        const existing = byId.get(d.id);
-        if (!existing) { byId.set(d.id, d); return; }
+        if (!d.auto || !d.id.startsWith("cc-card-")) return true;
+        if (creditCards.some((c) => c.name === d.card)) return true;
+        if (d.dismissed || (d.lineItems && d.lineItems.length > 0)) return true;
         changed = true;
-        if (d.paid || d.amountOverridden) byId.set(d.id, d);
+        return false;
       });
-      if (byId.size !== next.length) next = Array.from(byId.values());
-      // Stronger dedupe: two auto entries can end up with *different* ids
-      // (e.g. one resurrected from a stale remote copy mid-rename) while
-      // representing the same real card+due-date. Collapse by that real
-      // identity, not just by id string, so this keeps self-healing.
-      const deduped = dedupeAutoDebtsByCardDue(next);
-      if (deduped.length !== next.length) { next = deduped; changed = true; }
       return changed ? next : prev;
     });
-  }, [transactions, cardSettings]);
+  }, [transactions, cardSettings, creditCards, cardOwedBaseline]);
 
   useEffect(() => {
     if (profiles.length === 1 && !activeProfileId) setActiveProfileId(profiles[0].id);
@@ -709,8 +780,8 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
       let next = [...prev];
       let changed = false;
       [
-        ["plan-saving-" + monthKey, "saving", savingAmt, `เงินออมตามแผน (${monthLabel(monthKey)})`],
-        ["plan-invest-" + monthKey, "investment", investAmt, `เงินลงทุนตามแผน (${monthLabel(monthKey)})`],
+        ["plan-saving-" + monthKey, "saving", savingAmt, `Planned savings (${monthLabel(monthKey)})`],
+        ["plan-invest-" + monthKey, "investment", investAmt, `Planned investment (${monthLabel(monthKey)})`],
       ].forEach(([id, kind, amt, name]) => {
         const idx = next.findIndex((s) => s.id === id);
         if (amt > 0) {
@@ -729,24 +800,24 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
       const spent = monthSpend[cat] || 0;
       if (spent >= limit) {
         const meta = catMeta(expenseCategories, cat);
-        list.push({ id: "b-" + cat, level: "hot", text: `ใช้จ่ายหมวด "${meta.label}" ครบตามงบที่ตั้งไว้แล้ว (${fmtTHB(spent)} / ${fmtTHB(limit)})` });
+        list.push({ id: "b-" + cat, level: "hot", text: `"${meta.label}" spending has hit the budget you set (${fmtTHB(spent)} / ${fmtTHB(limit)})` });
       } else if (spent >= limit * 0.8) {
         const meta = catMeta(expenseCategories, cat);
-        list.push({ id: "b-" + cat, level: "warn", text: `หมวด "${meta.label}" ใกล้เต็มงบแล้ว (${fmtTHB(spent)} / ${fmtTHB(limit)})` });
+        list.push({ id: "b-" + cat, level: "warn", text: `"${meta.label}" is close to its budget (${fmtTHB(spent)} / ${fmtTHB(limit)})` });
       }
     });
     debts.forEach((d) => {
       if (d.paid) return;
       const diff = daysUntil(d.dueDate);
-      if (diff < 0) list.push({ id: "d-" + d.id, level: "hot", text: `เลยกำหนดชำระ "${d.name}" มาแล้ว ${Math.abs(diff)} วัน (${fmtTHB(d.amount)})` });
-      else if (diff <= 3) list.push({ id: "d-" + d.id, level: "warn", text: `ใกล้ถึงกำหนดชำระ "${d.name}" อีก ${diff} วัน (${fmtTHB(d.amount)})` });
+      if (diff < 0) list.push({ id: "d-" + d.id, level: "hot", text: `"${d.name}" is ${Math.abs(diff)} days overdue (${fmtTHB(d.amount)})` });
+      else if (diff <= 3) list.push({ id: "d-" + d.id, level: "warn", text: `"${d.name}" is due in ${diff} days (${fmtTHB(d.amount)})` });
     });
     investPlan.items.forEach((item) => {
       if (item.executed) return;
       const st = investItemStatus(item);
       const amt = investItemAmount(item, investPlan.totalPool);
-      if (st.level === "hot") list.push({ id: "inv-" + item.id, level: "hot", text: `ถึงกำหนดลงทุน "${item.name}" แล้ว (${fmtTHB(amt)}) — ${st.text}` });
-      else if (st.level === "warn") list.push({ id: "inv-" + item.id, level: "warn", text: `ใกล้ถึงกำหนดลงทุน "${item.name}" ${st.text} (${fmtTHB(amt)})` });
+      if (st.level === "hot") list.push({ id: "inv-" + item.id, level: "hot", text: `"${item.name}" investment is due (${fmtTHB(amt)}) — ${st.text}` });
+      else if (st.level === "warn") list.push({ id: "inv-" + item.id, level: "warn", text: `"${item.name}" investment coming up ${st.text} (${fmtTHB(amt)})` });
     });
     return list;
   }, [budgets, monthSpend, debts, monthKey, investPlan, expenseCategories]);
@@ -776,7 +847,7 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
     return (
       <div style={{ background: C.bg, minHeight: 480, fontFamily: "'Prompt', sans-serif" }} className="w-full flex items-center justify-center p-10">
         <style>{FONT_IMPORT}</style>
-        <p style={{ color: C.inkSoft }}>กำลังโหลด...</p>
+        <p style={{ color: C.inkSoft }}>Loading...</p>
       </div>
     );
   }
@@ -801,10 +872,10 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
           <TransactionsTab transactions={transactions} setTransactions={setTransactions} budgets={budgets} setTab={setTab} expenseCategories={expenseCategories} creditCards={creditCards} banks={banks} setDeletedTransactionIds={setDeletedTransactionIds} showToast={showToast} />
         )}
         {tab === "savings" && (
-          <SavingsTab savings={savings} setSavings={setSavings} investPlan={investPlan} setInvestPlan={setInvestPlan} holdings={holdings} setHoldings={setHoldings} banks={banks} bankBalances={bankBalances} setBankBalances={setBankBalances} transactions={transactions} cashBalance={cashBalance} setCashBalance={setCashBalance} setDeletedSavingsIds={setDeletedSavingsIds} setDeletedHoldingIds={setDeletedHoldingIds} showToast={showToast} />
+          <SavingsTab savings={savings} setSavings={setSavings} investPlan={investPlan} setInvestPlan={setInvestPlan} holdings={holdings} setHoldings={setHoldings} banks={banks} bankBalances={bankBalances} setBankBalances={setBankBalances} transactions={transactions} setTransactions={setTransactions} cashBalance={cashBalance} setCashBalance={setCashBalance} setDeletedSavingsIds={setDeletedSavingsIds} setDeletedHoldingIds={setDeletedHoldingIds} setDeletedInvestItemIds={setDeletedInvestItemIds} showToast={showToast} expenseCategories={expenseCategories} setExpenseCategories={setExpenseCategories} creditCards={creditCards} />
         )}
         {tab === "debts" && (
-          <DebtsTab debts={debts} setDebts={setDebts} creditCards={creditCards} banks={banks} setTransactions={setTransactions} setDeletedDebtIds={setDeletedDebtIds} setPlanOverrides={setPlanOverrides} showToast={showToast} />
+          <DebtsTab debts={debts} setDebts={setDebts} creditCards={creditCards} banks={banks} setTransactions={setTransactions} setDeletedDebtIds={setDeletedDebtIds} setPlanOverrides={setPlanOverrides} showToast={showToast} cardOwedBaseline={cardOwedBaseline} setCardOwedBaseline={setCardOwedBaseline} transactions={transactions} cardSettings={cardSettings} />
         )}
         {tab === "budgets" && (
           <BudgetsTab budgets={budgets} setBudgets={setBudgets} monthSpend={monthSpend} expenseCategories={expenseCategories} />
@@ -841,8 +912,8 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
 /* ---------------------------------------------------------------- */
 function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenProfilePicker, onOpenSettings, syncStatus, syncUsername, syncError, onOpenSyncSettings, buildVersion }) {
   const syncLabel = syncStatus && syncStatus.mode === "cloud"
-    ? (syncStatus.connected ? `☁️ ${syncUsername || "ข้อมูลส่วนตัวของฉัน"}` : "⚠️ ออฟไลน์")
-    : syncStatus ? "💾 บันทึกในเครื่อง" : null;
+    ? (syncStatus.connected ? `☁️ ${syncUsername || "My personal info"}` : "⚠️ Offline")
+    : syncStatus ? "💾 Saved locally" : null;
   return (
     <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, borderRadius: "0 0 28px 28px" }} className="px-5 pt-6 pb-5 text-white">
       <div className="flex items-center justify-between">
@@ -858,7 +929,7 @@ function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenPr
           </button>
           <div>
             <button onClick={onOpenProfilePicker} className="text-left">
-              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold leading-tight">{activeProfile ? `สวัสดี, ${activeProfile.name} 👋` : "สวัสดี 👋"}</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold leading-tight">{activeProfile ? `Hi, ${activeProfile.name} 👋` : "Hi 👋"}</p>
             </button>
             {syncLabel ? (
               <button onClick={onOpenSyncSettings} className="flex items-center gap-1.5 mt-0.5">
@@ -866,7 +937,7 @@ function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenPr
                 {buildVersion && <span style={{ color: "#DCDCFB" }} className="text-[9px] font-semibold">v{buildVersion}</span>}
               </button>
             ) : (
-              <p style={{ color: "#DCDCFB" }} className="text-xs leading-tight">{activeProfile ? "แตะเพื่อสลับผู้ใช้งาน" : "แตะเพื่อตั้งชื่อผู้ใช้งาน"}</p>
+              <p style={{ color: "#DCDCFB" }} className="text-xs leading-tight">{activeProfile ? "Tap to switch user" : "Tap to set your name"}</p>
             )}
             {syncError && (
               <button onClick={onOpenSyncSettings} style={{ color: "#FFD9CC" }} className="text-[10px] font-semibold text-left mt-0.5 block">{syncError}</button>
@@ -882,7 +953,7 @@ function Header({ streak, points, alertCount, budgetPct, activeProfile, onOpenPr
       {budgetPct !== null && (
         <div className="mt-4">
           <div className="flex justify-between text-xs mb-1" style={{ color: "#DCDCFB" }}>
-            <span>งบประมาณเดือนนี้</span><span className="font-bold">{budgetPct}%</span>
+            <span>This month's budget</span><span className="font-bold">{budgetPct}%</span>
           </div>
           <div style={{ background: "rgba(255,255,255,0.25)", height: 8, borderRadius: 8 }}>
             <div style={{ width: `${budgetPct}%`, background: C.yellow, height: 8, borderRadius: 8 }} />
@@ -946,19 +1017,19 @@ function ProfilePickerModal({ profiles, setProfiles, activeProfileId, setActiveP
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.45)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
       <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 380, width: "100%" }} onClick={(e) => e.stopPropagation()}>
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg mb-1">ชื่อของคุณ</p>
-        <p className="text-xs mb-4" style={{ color: C.inkSoft }}>ใช้แสดงในหน้าทักทายเท่านั้น ข้อมูลทั้งหมดในแอปนี้เป็นของคุณคนเดียวอยู่แล้ว</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg mb-1">Your name</p>
+        <p className="text-xs mb-4" style={{ color: C.inkSoft }}>Only used for the greeting — all data in this app is yours alone anyway</p>
 
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อของคุณ" style={{ ...inputStyle, marginBottom: 12 }} autoFocus />
-        <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>สีประจำตัว</p>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" style={{ ...inputStyle, marginBottom: 12 }} autoFocus />
+        <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>Color</p>
         <div className="flex flex-wrap gap-2 mb-5">
           {PROFILE_COLORS.map((c) => (
             <button key={c} onClick={() => setColor(c)} style={{ background: c, width: 28, height: 28, borderRadius: 28, border: color === c ? `3px solid ${C.ink}` : "3px solid transparent" }} />
           ))}
         </div>
-        <button onClick={save} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-full text-sm font-bold mb-3"><CheckCircle2 size={16} /> บันทึก</button>
+        <button onClick={save} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-full text-sm font-bold mb-3"><CheckCircle2 size={16} /> Save</button>
 
-        <button onClick={onClose} style={{ color: C.inkSoft }} className="w-full py-2 text-xs font-bold">ปิดหน้าต่างนี้</button>
+        <button onClick={onClose} style={{ color: C.inkSoft }} className="w-full py-2 text-xs font-bold">Close this window</button>
       </div>
     </div>
   );
@@ -1008,9 +1079,9 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
   const range = useMemo(() => {
     const d = new Date(ref);
     if (period === "day") { const key = toLocalDateStr(d); return { match: (t) => t.date === key, label: thDate(key) }; }
-    if (period === "year") { const y = d.getFullYear(); return { match: (t) => parseLocalDate(t.date).getFullYear() === y, label: `ปี ${y + 543}` }; }
+    if (period === "year") { const y = d.getFullYear(); return { match: (t) => parseLocalDate(t.date).getFullYear() === y, label: `Year ${y}` }; }
     const y = d.getFullYear(), m = d.getMonth();
-    return { match: (t) => { const dt = parseLocalDate(t.date); return dt.getFullYear() === y && dt.getMonth() === m; }, label: d.toLocaleDateString("th-TH", { month: "long", year: "numeric" }) };
+    return { match: (t) => { const dt = parseLocalDate(t.date); return dt.getFullYear() === y && dt.getMonth() === m; }, label: d.toLocaleDateString("en-US", { month: "long", year: "numeric" }) };
   }, [period, ref]);
 
   const filtered = transactions.filter(range.match);
@@ -1058,8 +1129,8 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
       {!hasToday && (
         <button onClick={() => setTab("transactions")} style={{ background: `linear-gradient(135deg, ${C.yellow}, ${C.yellowDeep})` }} className="w-full text-left rounded-3xl p-5 flex items-center justify-between shadow-sm">
           <div>
-            <p style={{ fontFamily: "'Prompt', sans-serif", color: C.purpleDeep }} className="text-lg font-bold mb-1">ยังไม่ได้บันทึกวันนี้เลยนะ</p>
-            <p className="text-sm" style={{ color: "#7A5B00" }}>แตะเพื่อบันทึกรายรับ-รายจ่ายวันนี้</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif", color: C.purpleDeep }} className="text-lg font-bold mb-1">Nothing logged today yet</p>
+            <p className="text-sm" style={{ color: "#7A5B00" }}>Tap to log today's income/expense</p>
           </div>
           <div style={{ background: "rgba(255,255,255,0.35)" }} className="w-11 h-11 rounded-full flex items-center justify-center shrink-0">
             <Plus size={20} color={C.purpleDeep} />
@@ -1071,7 +1142,7 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex rounded-full overflow-hidden p-1" style={{ background: C.card, border: `1px solid ${C.graySoft}` }}>
-          {[["day", "วัน"], ["month", "เดือน"], ["year", "ปี"]].map(([k, label]) => (
+          {[["day", "day"], ["month", "Month"], ["year", "year"]].map(([k, label]) => (
             <button key={k} onClick={() => setPeriod(k)} style={{ background: period === k ? C.purple : "transparent", color: period === k ? "#fff" : C.inkSoft }} className="px-3.5 py-1.5 text-sm font-bold rounded-full">{label}</button>
           ))}
         </div>
@@ -1084,19 +1155,19 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
 
       <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-5 shadow-sm text-white relative overflow-hidden">
         <div className="flex items-center justify-between mb-1">
-          <p className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>คงเหลือตอนนี้</p>
+          <p className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>Balance now</p>
           <span style={{ background: "rgba(255,255,255,0.18)" }} className="text-[11px] px-2.5 py-1 rounded-full">{range.label}</span>
         </div>
         {(() => {
           const liquidTotal = computeCashBalance(transactions, cashBalance) + banks.reduce((a, b) => a + computeBankBalance(transactions, bankBalances, b.name), 0);
           return <p style={{ fontFamily: "'Prompt', sans-serif", color: liquidTotal < 0 ? "#FF5C5C" : "#fff" }} className="text-3xl mb-1">{fmtTHB(liquidTotal)}</p>;
         })()}
-        <p className="text-[10px] mb-3" style={{ color: "rgba(255,255,255,0.6)" }}>เงินสด + ธนาคารทั้งหมด (ตรงกับยอดรวมในหน้าออม & ลงทุน)</p>
+        <p className="text-[10px] mb-3" style={{ color: "rgba(255,255,255,0.6)" }}>Cash + all banks (matches the total on the Saving page)</p>
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.22)" }} className="flex items-center pt-3 gap-4">
           <div className="flex-1 flex items-center gap-2">
             <div style={{ background: "rgba(255,255,255,0.18)" }} className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"><TrendingUp size={15} /></div>
             <div>
-              <p className="text-[11px]" style={{ color: "rgba(255,255,255,0.75)" }}>รายรับ</p>
+              <p className="text-[11px]" style={{ color: "rgba(255,255,255,0.75)" }}>Income</p>
               <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm">{fmtTHB(income)}</p>
             </div>
           </div>
@@ -1104,7 +1175,7 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
           <div className="flex-1 flex items-center gap-2">
             <div style={{ background: "rgba(255,255,255,0.18)" }} className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"><TrendingDown size={15} /></div>
             <div>
-              <p className="text-[11px]" style={{ color: "rgba(255,255,255,0.75)" }}>รายจ่าย</p>
+              <p className="text-[11px]" style={{ color: "rgba(255,255,255,0.75)" }}>Expense</p>
               <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm">{fmtTHB(expense)}</p>
             </div>
           </div>
@@ -1113,10 +1184,10 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">สัดส่วนรายจ่ายตามหมวดหมู่</p>
-          {byCatTotal > 0 && <span className="text-xs font-bold" style={{ color: C.inkSoft }}>เฉลี่ยรวม {fmtTHB(byCatTotal / daysInPeriod)}/วัน</span>}
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">Expense breakdown by category</p>
+          {byCatTotal > 0 && <span className="text-xs font-bold" style={{ color: C.inkSoft }}>Avg {fmtTHB(byCatTotal / daysInPeriod)}/day</span>}
         </div>
-        {byCat.length === 0 ? <EmptyNote text="ยังไม่มีรายจ่ายในช่วงนี้" /> : (
+        {byCat.length === 0 ? <EmptyNote text="No expenses in this period" /> : (
           <div className="flex flex-col items-center gap-5">
             <div style={{ width: "100%", maxWidth: 260, height: 260, position: "relative" }}>
               <ResponsiveContainer>
@@ -1128,7 +1199,7 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
                 </PieChart>
               </ResponsiveContainer>
               <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                <p className="text-xs font-semibold" style={{ color: C.inkSoft }}>{period === "day" ? "วันนี้" : period === "month" ? "เดือนนี้" : "ปีนี้"}</p>
+                <p className="text-xs font-semibold" style={{ color: C.inkSoft }}>{period === "day" ? "Today" : period === "month" ? "This month" : "This year"}</p>
                 <p style={{ fontFamily: "'Prompt', sans-serif", color: C.ink }} className="text-2xl font-extrabold">{fmtTHB(byCatTotal)}</p>
               </div>
             </div>
@@ -1138,7 +1209,7 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
                   <span className="flex items-center gap-2 font-semibold"><span style={{ width: 10, height: 10, borderRadius: 10, background: e.color }} />{e.name}</span>
                   <div className="text-right">
                     <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold leading-tight">{fmtTHB(e.value)}</p>
-                    <p className="text-[10px] leading-tight" style={{ color: C.inkSoft }}>เฉลี่ย {fmtTHB(e.avgPerDay)}/วัน</p>
+                    <p className="text-[10px] leading-tight" style={{ color: C.inkSoft }}>Avg {fmtTHB(e.avgPerDay)}/day</p>
                   </div>
                 </div>
               ))}
@@ -1147,22 +1218,15 @@ function Overview({ transactions, alerts, onDismissAlert, setTab, expenseCategor
         )}
       </div>
 
-      {creditExpense > 0 && (
-        <div style={{ background: C.purpleSoft, color: C.purpleDeep }} className="rounded-2xl px-4 py-3 text-xs font-semibold flex items-start gap-2">
-          <CreditCard size={14} className="shrink-0 mt-0.5" />
-          <span>ใช้จ่ายผ่านบัตรเครดิตช่วงนี้ {fmtTHB(creditExpense)} — ไม่นับเป็นรายจ่ายเดือนนี้ แต่จะกลายเป็นหนี้ที่ต้องชำระในเดือนถัดไปแทน (ดูได้ที่แท็บ "หนี้สิน")</span>
-        </div>
-      )}
-
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-1">เปรียบเทียบรายจ่ายรายเดือน</p>
-        <p className="text-[11px] mb-4" style={{ color: C.inkSoft }}>เฉลี่ย {fmtTHB(trendAvg)}/เดือน · 6 เดือนล่าสุด · แยกสีตามหมวดหมู่ · นับเฉพาะเงินสด/โอน (ไม่รวมบัตรเครดิต)</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-1">Compare monthly spending</p>
+        <p className="text-[11px] mb-4" style={{ color: C.inkSoft }}>Avg {fmtTHB(trendAvg)}/month · Last 6 months · Colored by category · Cash/transfer only (excludes credit card)</p>
         <div className="flex items-end justify-between gap-2.5" style={{ height: 160 }}>
           {monthlyTrend.map((m, i) => {
             const totalPct = trendMax > 0 ? Math.max(m.value > 0 ? 4 : 0, Math.round((m.value / trendMax) * 100)) : 0;
             const title = m.segments.length > 0
-              ? m.segments.map((s) => `${s.label}: ${fmtTHB(s.value)}`).join("\n") + `\nรวม: ${fmtTHB(m.value)}`
-              : "ยังไม่มีรายจ่าย";
+              ? m.segments.map((s) => `${s.label}: ${fmtTHB(s.value)}`).join("\n") + `\nTotal: ${fmtTHB(m.value)}`
+              : "No expenses yet";
             return (
               <div key={i} className="flex-1 flex flex-col items-center gap-2">
                 <div title={title} style={{ background: m.value > 0 ? "#1B1B2F" : C.graySoft, width: "100%", maxWidth: 34, height: 120, borderRadius: 999, position: "relative", overflow: "hidden", opacity: m.isCurrent ? 1 : 0.82 }}>
@@ -1261,7 +1325,7 @@ function DateRangePicker({ from, to, onChange }) {
   for (let i = 0; i < firstDow; i++) cells.push(null);
   for (let d = 1; d <= daysCount; d++) cells.push(d);
 
-  const label = !from ? "เลือกช่วงวันที่" : (to && to !== from) ? `${thDate(from)} - ${thDate(to)}` : thDate(from);
+  const label = !from ? "Select date range" : (to && to !== from) ? `${thDate(from)} - ${thDate(to)}` : thDate(from);
 
   return (
     <div style={{ position: "relative" }}>
@@ -1274,11 +1338,11 @@ function DateRangePicker({ from, to, onChange }) {
           <div style={{ position: "absolute", top: "110%", left: 0, background: C.card, borderRadius: 20, padding: 16, boxShadow: "0 8px 28px rgba(0,0,0,0.14)", zIndex: 201, width: 288 }}>
             <div className="flex items-center justify-between mb-3">
               <button onClick={() => shiftMonth(-1)} style={{ background: C.graySoft }} className="p-1.5 rounded-full"><ChevronLeft size={14} /></button>
-              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold">{MONTH_ABBR_TH[m]} {y + 543}</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold">{MONTH_ABBR_TH[m]} {y}</p>
               <button onClick={() => shiftMonth(1)} style={{ background: C.graySoft }} className="p-1.5 rounded-full"><ChevronRight size={14} /></button>
             </div>
             <div className="grid grid-cols-7 gap-y-1 text-center">
-              {["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"].map((d) => <span key={d} className="text-[10px] font-bold" style={{ color: C.inkSoft }}>{d}</span>)}
+              {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((d) => <span key={d} className="text-[10px] font-bold" style={{ color: C.inkSoft }}>{d}</span>)}
               {cells.map((d, i) => {
                 if (!d) return <span key={i} />;
                 const dStr = `${y}-${pad2(m + 1)}-${pad2(d)}`;
@@ -1297,8 +1361,8 @@ function DateRangePicker({ from, to, onChange }) {
               })}
             </div>
             <div className="flex gap-2 mt-3">
-              <button onClick={clear} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2 rounded-full text-xs font-bold">ล้าง</button>
-              <button onClick={apply} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex-1 py-2 rounded-full text-xs font-bold">ตกลง</button>
+              <button onClick={clear} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2 rounded-full text-xs font-bold">Clear</button>
+              <button onClick={apply} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex-1 py-2 rounded-full text-xs font-bold">OK</button>
             </div>
           </div>
         </>
@@ -1383,14 +1447,14 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
     } else {
       setTransactions((prev) => [{ id: uid(), type, amount: amt, category, subcategory: type === "expense" ? subcategory : null, date, payment, card: payment === "credit" ? card : null, bank: payment === "transfer" ? bank : null, note: note.trim() }, ...prev]);
     }
-    showToast(wasEditing ? "แก้ไขรายการสำเร็จ ✓" : "บันทึกรายการสำเร็จ ✓");
+    showToast(wasEditing ? "Edited successfully ✓" : "Saved successfully ✓");
     resetForm();
   }
   function remove(id) {
     setTransactions((prev) => prev.filter((t) => t.id !== id));
     setDeletedTransactionIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
     if (editingId === id) resetForm();
-    showToast("ลบรายการสำเร็จ ✓");
+    showToast("Deleted successfully ✓");
   }
 
   const sorted = [...transactions].sort((a, b) => (a.date < b.date ? 1 : -1));
@@ -1410,14 +1474,14 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
             <div style={{ background: C.coralSoft, width: 56, height: 56, borderRadius: 56 }} className="flex items-center justify-center mx-auto mb-3">
               <AlertTriangle size={26} color={C.coral} />
             </div>
-            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg mb-1.5">ใช้จ่ายเกินงบแล้ว!</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg mb-1.5">Over budget!</p>
             <p className="text-sm mb-4" style={{ color: C.inkSoft }}>
-              หมวด <b style={{ color: C.ink }}>{catMeta(expenseCategories, budgetAlert.category).label}</b> เดือนนี้ใช้ไป <b style={{ color: C.coral, fontFamily: "'Prompt', sans-serif" }}>{fmtTHB(budgetAlert.spent)}</b> จากงบที่ตั้งไว้ <b style={{ color: C.ink }}>{fmtTHB(budgetAlert.limit)}</b>
+              Category <b style={{ color: C.ink }}>{catMeta(expenseCategories, budgetAlert.category).label}</b> has spent <b style={{ color: C.coral, fontFamily: "'Prompt', sans-serif" }}>{fmtTHB(budgetAlert.spent)}</b> of the <b style={{ color: C.ink }}>{fmtTHB(budgetAlert.limit)}</b> budget this month
             </p>
             <div className="flex gap-2">
-              <button onClick={() => setBudgetAlert(null)} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2.5 rounded-full text-sm font-bold">รับทราบ</button>
+              <button onClick={() => setBudgetAlert(null)} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2.5 rounded-full text-sm font-bold">Got it</button>
               {setTab && (
-                <button onClick={() => { setBudgetAlert(null); setTab("budgets"); }} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex-1 py-2.5 rounded-full text-sm font-bold">ดูงบประมาณ</button>
+                <button onClick={() => { setBudgetAlert(null); setTab("budgets"); }} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex-1 py-2.5 rounded-full text-sm font-bold">View Budget</button>
               )}
             </div>
           </div>
@@ -1427,7 +1491,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
         <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowSubcatModal(false)}>
           <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">เลือกหมวดหมู่ย่อย</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">Select subcategory</p>
               <button onClick={() => setShowSubcatModal(false)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
             </div>
             <div className="grid grid-cols-4 gap-y-4 gap-x-1">
@@ -1435,7 +1499,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
                 <div style={{ background: !subcategory ? C.purple : "#fff", border: `1.5px solid ${C.purple}` }} className="w-14 h-14 rounded-full flex items-center justify-center shadow-sm">
                   <MoreHorizontal size={19} color={!subcategory ? "#fff" : C.purple} />
                 </div>
-                <span style={{ color: !subcategory ? C.purple : C.inkSoft }} className="text-[11px] font-bold">ทั่วไป</span>
+                <span style={{ color: !subcategory ? C.purple : C.inkSoft }} className="text-[11px] font-bold">General</span>
               </button>
               {activeSubcats.map((s) => {
                 const SIcon = resolveIcon(s.icon); const activeSub = subcategory === s.key;
@@ -1456,11 +1520,11 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
         <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowCardModal(false)}>
           <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">เลือกบัตรเครดิต</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">Select credit card</p>
               <button onClick={() => setShowCardModal(false)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
             </div>
             {creditCards.length === 0 ? (
-              <EmptyNote text="ยังไม่มีบัตรเครดิต — ไปเพิ่มได้ที่หน้าตั้งค่า" />
+              <EmptyNote text="No credit cards yet — add one on the Settings page" />
             ) : (
               <div className="grid grid-cols-3 gap-y-4 gap-x-1">
                 {creditCards.map((cd) => {
@@ -1484,7 +1548,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
         <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowBankModal(false)}>
           <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">เลือกธนาคาร</p>
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">Select bank</p>
               <button onClick={() => setShowBankModal(false)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
             </div>
             <div className="grid grid-cols-3 gap-y-4 gap-x-1">
@@ -1492,7 +1556,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
                 <div style={{ background: !bank ? C.purple : "#fff", border: `1.5px solid ${C.purple}` }} className="w-14 h-14 rounded-full flex items-center justify-center shadow-sm">
                   <MoreHorizontal size={19} color={!bank ? "#fff" : C.purple} />
                 </div>
-                <span style={{ color: !bank ? C.purple : C.inkSoft }} className="text-[11px] font-bold">ไม่ระบุ</span>
+                <span style={{ color: !bank ? C.purple : C.inkSoft }} className="text-[11px] font-bold">Unspecified</span>
               </button>
               {banks.map((b) => {
                 const active = bank === b.name;
@@ -1512,21 +1576,21 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
       )}
       <div style={{ background: C.card, border: editingId ? `2px solid ${C.purple}` : "none" }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">{editingId ? "แก้ไขรายการ" : "บันทึกรายการใหม่"}</p>
-          {editingId && <span style={{ background: C.purpleSoft, color: C.purpleDeep }} className="text-[11px] font-bold px-2.5 py-1 rounded-full">กำลังแก้ไข</span>}
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">{editingId ? "Edit item" : "Save new item"}</p>
+          {editingId && <span style={{ background: C.purpleSoft, color: C.purpleDeep }} className="text-[11px] font-bold px-2.5 py-1 rounded-full">Editing</span>}
         </div>
 
         <div className="flex rounded-full overflow-hidden p-1 mb-3.5 w-fit" style={{ background: C.graySoft }}>
-          <button onClick={() => switchType("expense")} style={{ background: type === "expense" ? C.coral : "transparent", color: type === "expense" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><TrendingDown size={14} />รายจ่าย</button>
-          <button onClick={() => switchType("income")} style={{ background: type === "income" ? C.teal : "transparent", color: type === "income" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><TrendingUp size={14} />รายรับ</button>
+          <button onClick={() => switchType("expense")} style={{ background: type === "expense" ? C.coral : "transparent", color: type === "expense" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><TrendingDown size={14} />Expense</button>
+          <button onClick={() => switchType("income")} style={{ background: type === "income" ? C.teal : "transparent", color: type === "income" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><TrendingUp size={14} />Income</button>
         </div>
 
         <div className="grid grid-cols-2 gap-3 mb-3.5">
-          <Field label="จำนวนเงิน (บาท)"><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
-          <Field label="วันที่"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} /></Field>
+          <Field label="Amount (THB)"><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+          <Field label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} /></Field>
         </div>
 
-        <Field label="หมวดหมู่">
+        <Field label="Category">
           <div className="grid grid-cols-4 gap-y-3 gap-x-1">
             {categories.map((c) => {
               const Icon = resolveIcon(c.icon); const active = category === c.key;
@@ -1540,14 +1604,14 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
               );
             })}
           </div>
-          {catError && <p className="text-xs font-semibold mt-2" style={{ color: C.coral }}>กรุณาเลือกหมวดหมู่ก่อนบันทึก</p>}
+          {catError && <p className="text-xs font-semibold mt-2" style={{ color: C.coral }}>Please select a category before saving</p>}
           {activeSubcats && activeSubcats.length > 0 && (() => {
             const subMeta = subcategory ? subcategoryMeta(expenseCategories, category, subcategory) : null;
             const SubIcon = subMeta ? resolveIcon(subMeta.icon) : null;
             return (
               <button onClick={() => setShowSubcatModal(true)} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs font-bold mt-3 w-full">
                 {SubIcon && <SubIcon size={14} />}
-                <span>{subMeta ? `หมวดย่อย: ${subMeta.label}` : "เลือกหมวดหมู่ย่อย (ไม่บังคับ)"}</span>
+                <span>{subMeta ? `Subcategory: ${subMeta.label}` : "Select subcategory (optional)"}</span>
                 <Pencil size={12} className="ml-auto" />
               </button>
             );
@@ -1555,38 +1619,38 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
         </Field>
 
         <div className="h-4" />
-        <Field label="ช่องทางการชำระเงิน">
-          <div className="flex flex-wrap gap-2.5 justify-center">
-            {[["cash", "เงินสด", Banknote], ["transfer", "โอนเงิน", ArrowLeftRight], ["credit", "บัตรเครดิต", CreditCard]].map(([k, label, Icon]) => {
+        <Field label="Payment method">
+          <div className="grid grid-cols-3 gap-2">
+            {[["cash", "Cash", Banknote], ["transfer", "Transfer", ArrowLeftRight], ["credit", "Credit Card", CreditCard]].map(([k, label, Icon]) => {
               const active = payment === k;
               return (
                 <button key={k} onClick={() => pickPayment(k)}
                   style={{ background: active ? C.purple : "#fff", border: `1.5px solid ${C.purple}` }}
-                  className="flex items-center gap-2 px-3.5 py-2 rounded-2xl shadow-sm">
-                  <div style={{ background: active ? "rgba(255,255,255,0.25)" : C.purpleSoft }} className="w-8 h-8 rounded-full flex items-center justify-center shrink-0">
-                    <Icon size={15} color={active ? "#fff" : C.purple} />
+                  className="flex flex-col items-center gap-1 px-1 py-2.5 rounded-2xl shadow-sm">
+                  <div style={{ background: active ? "rgba(255,255,255,0.25)" : C.purpleSoft }} className="w-7 h-7 rounded-full flex items-center justify-center shrink-0">
+                    <Icon size={14} color={active ? "#fff" : C.purple} />
                   </div>
-                  <span style={{ color: active ? "#fff" : C.purple }} className="text-xs font-bold text-left leading-tight">{label}</span>
+                  <span style={{ color: active ? "#fff" : C.purple }} className="text-[11px] font-bold text-center leading-tight whitespace-nowrap">{label}</span>
                 </button>
               );
             })}
           </div>
-          {payError && <p className="text-xs font-semibold mt-2 text-center" style={{ color: C.coral }}>กรุณาเลือกช่องทางการชำระเงิน</p>}
+          {payError && <p className="text-xs font-semibold mt-2 text-center" style={{ color: C.coral }}>Please select a payment method</p>}
           {payment === "credit" && (
             <div className="flex justify-center mt-3">
               <button onClick={() => setShowCardModal(true)} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs font-bold">
                 <CreditCard size={14} />
-                <span>{card ? `บัตร: ${card}` : "เลือกบัตรเครดิต"}</span>
+                <span>{card ? `Card: ${card}` : "Select credit card"}</span>
                 <Pencil size={12} />
               </button>
             </div>
           )}
-          {cardError && <p className="text-xs font-semibold mt-2 text-center" style={{ color: C.coral }}>กรุณาเลือกบัตรเครดิต</p>}
+          {cardError && <p className="text-xs font-semibold mt-2 text-center" style={{ color: C.coral }}>Please select a credit card</p>}
           {payment === "transfer" && banks.length > 0 && (
             <div className="flex justify-center mt-3">
               <button onClick={() => setShowBankModal(true)} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs font-bold">
                 <Landmark size={14} />
-                <span>{bank ? `ธนาคาร: ${bank}` : "เลือกธนาคาร (ไม่บังคับ)"}</span>
+                <span>{bank ? `Bank: ${bank}` : "Select bank (optional)"}</span>
                 <Pencil size={12} />
               </button>
             </div>
@@ -1594,26 +1658,26 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
         </Field>
 
         <div className="h-3" />
-        <Field label="โน้ต (ไม่บังคับ)"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="เช่น ข้าวเที่ยงกับเพื่อน" style={inputStyle} /></Field>
+        <Field label="Note (optional)"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. lunch with friends" style={inputStyle} /></Field>
 
         <div className="flex items-center gap-2 mt-4">
           <button onClick={save} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm">
-            {editingId ? <><CheckCircle2 size={16} /> บันทึกการแก้ไข</> : <><Plus size={16} /> บันทึกรายการ</>}
+            {editingId ? <><CheckCircle2 size={16} /> Save changes</> : <><Plus size={16} /> Save item</>}
           </button>
           {editingId && (
-            <button onClick={resetForm} style={{ background: C.graySoft, color: C.inkSoft }} className="px-4 py-2.5 rounded-full text-sm font-bold">ยกเลิก</button>
+            <button onClick={resetForm} style={{ background: C.graySoft, color: C.inkSoft }} className="px-4 py-2.5 rounded-full text-sm font-bold">Cancel</button>
           )}
         </div>
       </div>
 
       <div>
         <div className="flex items-center justify-between mb-2.5 flex-wrap gap-2">
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">รายการทั้งหมด</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">All items</p>
           <DateRangePicker from={dateFrom} to={dateTo} onChange={(f, t) => { setDateFrom(f); setDateTo(t); }} />
         </div>
 
         <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="flex gap-2 rounded-2xl p-2 mb-3">
-          {[["all", "ทั้งหมด"], ["expense", "รายจ่าย"], ["income", "รายรับ"]].map(([k, l]) => (
+          {[["all", "All"], ["expense", "Expense"], ["income", "Income"]].map(([k, l]) => (
             <button key={k} onClick={() => { setFilter(k); setCategoryFilter([]); }}
               style={{ background: filter === k ? "#fff" : "transparent", color: filter === k ? C.purpleDeep : "#fff", border: filter === k ? "none" : "1.5px solid rgba(255,255,255,0.5)" }}
               className="flex-1 py-2 text-sm font-bold rounded-xl">{l}</button>
@@ -1636,25 +1700,25 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
 
         {(categoryFilter.length > 0 || dateFrom !== defaultDateFrom || dateTo !== defaultDateTo) && (
           <div className="flex justify-end mb-3 -mt-2">
-            <button onClick={() => { setCategoryFilter([]); setDateFrom(defaultDateFrom); setDateTo(defaultDateTo); }} style={{ color: C.coral }} className="text-xs font-bold">ล้างตัวกรอง</button>
+            <button onClick={() => { setCategoryFilter([]); setDateFrom(defaultDateFrom); setDateTo(defaultDateTo); }} style={{ color: C.coral }} className="text-xs font-bold">Clear filters</button>
           </div>
         )}
         {visible.length > 0 && (
           <div style={{ background: C.bg }} className="flex items-center gap-3 rounded-2xl px-4 py-3 mb-3">
-            <p className="text-xs font-bold" style={{ color: C.inkSoft }}>{visible.length} รายการ</p>
+            <p className="text-xs font-bold" style={{ color: C.inkSoft }}>{visible.length} items</p>
             <div style={{ background: C.graySoft, width: 1, alignSelf: "stretch" }} />
             {filter !== "expense" && (
-              <p className="text-xs font-bold" style={{ color: C.teal, fontFamily: "'Prompt', sans-serif" }}>รายรับ {fmtTHB(visibleIncome)}</p>
+              <p className="text-xs font-bold" style={{ color: C.teal, fontFamily: "'Prompt', sans-serif" }}>Income {fmtTHB(visibleIncome)}</p>
             )}
             {filter !== "income" && (
-              <p className="text-xs font-bold" style={{ color: C.coral, fontFamily: "'Prompt', sans-serif" }}>รายจ่าย {fmtTHB(visibleExpense)}</p>
+              <p className="text-xs font-bold" style={{ color: C.coral, fontFamily: "'Prompt', sans-serif" }}>Expense {fmtTHB(visibleExpense)}</p>
             )}
             {filter === "all" && (
-              <p className="text-xs font-bold ml-auto" style={{ color: C.ink, fontFamily: "'Prompt', sans-serif" }}>สุทธิ {fmtTHB(visibleIncome - visibleExpense)}</p>
+              <p className="text-xs font-bold ml-auto" style={{ color: C.ink, fontFamily: "'Prompt', sans-serif" }}>Net {fmtTHB(visibleIncome - visibleExpense)}</p>
             )}
           </div>
         )}
-        {visible.length === 0 ? <EmptyNote text="ยังไม่มีรายการ — เริ่มบันทึกรายการแรกของคุณด้านบน" /> : (
+        {visible.length === 0 ? <EmptyNote text="No items yet — log your first item above" /> : (
           <div className="flex flex-col gap-2">
             {visible.map((t) => {
               const meta = catMeta(t.type === "expense" ? expenseCategories : INCOME_CATEGORIES, t.category);
@@ -1670,7 +1734,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
                     <p className="text-sm font-bold truncate">{meta.label}{subMeta ? ` · ${subMeta.label}` : ""}{t.note ? ` · ${t.note}` : ""}</p>
                     <p className="text-xs flex items-center gap-1.5 flex-wrap" style={{ color: C.inkSoft }}>
                       <span>{thDate(t.date)}</span><span>·</span>
-                      <span>{t.payment === "cash" ? "เงินสด" : t.payment === "transfer" ? (t.bank ? `โอนเงิน (${t.bank})` : "โอนเงิน") : `บัตร (${t.card})`}</span>
+                      <span>{t.payment === "cash" ? "Cash" : t.payment === "transfer" ? (t.bank ? `Transfer (${t.bank})` : "Transfer") : `Card (${t.card})`}</span>
                     </p>
                   </div>
                   <p style={{ fontFamily: "'Prompt', sans-serif", color: t.type === "expense" ? C.coral : C.teal }} className="text-sm font-bold whitespace-nowrap">
@@ -1698,8 +1762,8 @@ const inputStyle = {
 };
 
 /* ---------------------------------------------------------------- */
-function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, setHoldings, banks, bankBalances, setBankBalances, transactions, cashBalance, setCashBalance, setDeletedSavingsIds, setDeletedHoldingIds, showToast }) {
-  const [subTab, setSubTab] = useState("log");
+function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, setHoldings, banks, bankBalances, setBankBalances, transactions, setTransactions, cashBalance, setCashBalance, setDeletedSavingsIds, setDeletedHoldingIds, setDeletedInvestItemIds, showToast, expenseCategories, setExpenseCategories, creditCards }) {
+  const [subTab, setSubTab] = useState("banks");
   const [kind, setKind] = useState("saving");
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
@@ -1711,50 +1775,45 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
     if (!amt || amt <= 0 || !name.trim()) return;
     setSavings((prev) => [{ id: uid(), kind, name: name.trim(), amount: amt, target: target ? parseFloat(target) : null, date }, ...prev]);
     setName(""); setAmount(""); setTarget("");
-    showToast("บันทึกรายการสำเร็จ ✓");
+    showToast("Saved successfully ✓");
   }
   function remove(id) {
     setSavings((prev) => prev.filter((s) => s.id !== id));
     setDeletedSavingsIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
-    showToast("ลบรายการสำเร็จ ✓");
+    showToast("Deleted successfully ✓");
   }
 
-  const totalSaving = savings.filter((s) => s.kind === "saving").reduce((a, s) => a + s.amount, 0);
-  const totalInvest = savings.filter((s) => s.kind === "investment").reduce((a, s) => a + s.amount, 0);
+  const totalSaving = computeCashBalance(transactions, cashBalance) + banks.reduce((a, b) => a + computeBankBalance(transactions, bankBalances, b.name), 0);
+  const totalInvest = holdings.reduce((a, h) => a + h.current, 0);
 
   return (
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-2 gap-3">
         <div style={{ background: `linear-gradient(135deg, ${C.teal}, #22A184)` }} className="rounded-2xl p-4 text-white shadow-sm">
           <PiggyBank size={20} className="mb-2" />
-          <p className="text-xs font-semibold opacity-90">เงินออมสะสม</p>
+          <p className="text-xs font-semibold opacity-90">Total Savings</p>
           <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalSaving)}</p>
         </div>
         <div style={{ background: `linear-gradient(135deg, ${C.blue}, #2E93C4)` }} className="rounded-2xl p-4 text-white shadow-sm">
           <TrendingUp size={20} className="mb-2" />
-          <p className="text-xs font-semibold opacity-90">เงินลงทุนสะสม</p>
+          <p className="text-xs font-semibold opacity-90">Total Invested</p>
           <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalInvest)}</p>
         </div>
       </div>
 
-      <div className="flex rounded-full overflow-hidden p-1 w-fit" style={{ background: C.graySoft }}>
-        <button onClick={() => setSubTab("log")} style={{ background: subTab === "log" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full shadow-sm">Transactions</button>
-        <button onClick={() => setSubTab("banks")} style={{ background: subTab === "banks" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><Landmark size={13} />ธนาคาร</button>
-        <button onClick={() => setSubTab("plan")} style={{ background: subTab === "plan" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><PieChartIcon size={13} />Investment Plan</button>
-        <button onClick={() => setSubTab("holdings")} style={{ background: subTab === "holdings" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><Rocket size={13} />Portfolio</button>
+      <div className="flex rounded-full overflow-hidden p-1 w-full" style={{ background: C.graySoft }}>
+        <button onClick={() => setSubTab("banks")} style={{ background: subTab === "banks" ? C.card : "transparent" }} className="flex-1 px-3 py-1.5 text-sm font-bold rounded-full flex items-center justify-center gap-1.5"><Landmark size={13} />Saving</button>
+        <button onClick={() => setSubTab("plan")} style={{ background: subTab === "plan" ? C.card : "transparent" }} className="flex-1 px-3 py-1.5 text-sm font-bold rounded-full flex items-center justify-center gap-1.5"><PieChartIcon size={13} />Investment</button>
+        <button onClick={() => setSubTab("holdings")} style={{ background: subTab === "holdings" ? C.card : "transparent" }} className="flex-1 px-3 py-1.5 text-sm font-bold rounded-full flex items-center justify-center gap-1.5"><Rocket size={13} />Portfolio</button>
       </div>
 
       {subTab === "banks" && (
         <div className="flex flex-col gap-3">
-          <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-4 text-white shadow-sm">
-            <p className="text-xs mb-1" style={{ color: "rgba(255,255,255,0.75)" }}>ยอดรวมเงินสด + ทุกธนาคาร</p>
-            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-xl">{fmtTHB(computeCashBalance(transactions, cashBalance) + banks.reduce((a, b) => a + computeBankBalance(transactions, bankBalances, b.name), 0))}</p>
-          </div>
           <div style={{ background: C.card }} className="flex items-center gap-3 rounded-2xl p-3.5 shadow-sm">
             <div style={{ background: C.teal }} className="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0"><Banknote size={18} color="#fff" /></div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold truncate">เงินสด</p>
-              <p className="text-[11px]" style={{ color: C.inkSoft }}>ยอดคงเหลือปัจจุบัน</p>
+              <p className="text-sm font-bold truncate">Cash</p>
+              <p className="text-[11px]" style={{ color: C.inkSoft }}>Current balance</p>
             </div>
             <input
               type="number"
@@ -1769,7 +1828,7 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
             />
           </div>
           {banks.length === 0 ? (
-            <EmptyNote text='ยังไม่มีธนาคาร — ไปเพิ่มได้ที่หน้าตั้งค่า (⚙️ มุมขวาบน) แท็บ "ธนาคาร"' />
+            <EmptyNote text='No banks yet — add one on the Settings page (⚙️ top right) under the "Bank" tab' />
           ) : (
             <div className="flex flex-col gap-2">
               {banks.map((b) => {
@@ -1780,7 +1839,7 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
                     <div style={{ background: b.color }} className="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0"><BankIcon size={18} color="#fff" /></div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-bold truncate">{b.name}</p>
-                      <p className="text-[11px]" style={{ color: C.inkSoft }}>ยอดคงเหลือปัจจุบัน</p>
+                      <p className="text-[11px]" style={{ color: C.inkSoft }}>Current balance</p>
                     </div>
                     <input
                       type="number"
@@ -1799,64 +1858,12 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
               })}
             </div>
           )}
-          <p className="text-[11px]" style={{ color: C.inkSoft }}>แก้ยอดตรงๆ ในช่องได้ตลอด (เช่นตอนเทียบกับยอดจริง) รายการเงินสด/โอนเงินใหม่ที่บันทึกในหน้ารายรับ-จ่ายจะบวก/ลบยอดนี้ให้อัตโนมัติ — เงินสดนับรวมย้อนหลังทุกรายการที่เคยบันทึกไว้ (เพราะ "เงินสด" มีอยู่แล้วในทุกรายการเดิม) ส่วนธนาคารนับเฉพาะรายการใหม่หลังเพิ่มธนาคารเท่านั้น</p>
+          <p className="text-[11px]" style={{ color: C.inkSoft }}>Edit the amount directly anytime (e.g. to match a real balance). New cash/transfer items logged on the Transactions page will add/subtract this automatically — cash counts every past item retroactively (since "cash" already existed on every old record), while banks only count new items after the bank was added</p>
         </div>
-      )}
-
-      {subTab === "log" && (
-      <>
-      <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เพิ่มรายการออม / ลงทุน</p>
-        <div className="flex rounded-full overflow-hidden p-1 mb-3.5 w-fit" style={{ background: C.graySoft }}>
-          <button onClick={() => setKind("saving")} style={{ background: kind === "saving" ? C.teal : "transparent", color: kind === "saving" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><PiggyBank size={14} />เงินออม</button>
-          <button onClick={() => setKind("investment")} style={{ background: kind === "investment" ? C.blue : "transparent", color: kind === "investment" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><TrendingUp size={14} />เงินลงทุน</button>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-          <Field label="ชื่อรายการ"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น กองทุนสำรองเลี้ยงชีพ" style={inputStyle} /></Field>
-          <Field label="จำนวนเงิน (บาท)"><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
-          <Field label="เป้าหมาย (ไม่บังคับ)"><input type="number" min="0" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
-          <Field label="วันที่"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} /></Field>
-        </div>
-        <button onClick={add} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> เพิ่มรายการ</button>
-      </div>
-
-      <div>
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-2.5">รายการทั้งหมด</p>
-        {savings.length === 0 ? <EmptyNote text="ยังไม่มีรายการออมหรือลงทุน" /> : (
-          <div className="flex flex-col gap-2">
-            {savings.map((s) => {
-              const pct = s.target ? Math.min(100, Math.round((s.amount / s.target) * 100)) : null;
-              const color = s.kind === "saving" ? C.teal : C.blue;
-              return (
-                <div key={s.id} style={{ background: C.card }} className="px-3.5 py-3 rounded-2xl shadow-sm">
-                  <div className="flex items-center gap-3">
-                    <div style={{ background: color }} className="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0">
-                      {s.kind === "saving" ? <PiggyBank size={16} color="#fff" /> : <TrendingUp size={16} color="#fff" />}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-bold truncate">{s.name}</p>
-                      <p className="text-xs" style={{ color: C.inkSoft }}>{thDate(s.date)}</p>
-                    </div>
-                    <p style={{ fontFamily: "'Prompt', sans-serif", color }} className="text-sm font-bold">{fmtTHB(s.amount)}</p>
-                    <button onClick={() => remove(s.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={14} /></button>
-                  </div>
-                  {pct !== null && (
-                    <div className="mt-2 ml-[52px]">
-                      <div style={{ background: C.graySoft, height: 7, borderRadius: 6 }}><div style={{ width: `${pct}%`, background: color, height: 7, borderRadius: 6 }} /></div>
-                      <p className="text-[11px] mt-1 font-semibold" style={{ color: C.inkSoft }}>{pct}% ของเป้าหมาย {fmtTHB(s.target)}</p>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-      </>
       )}
 
       {subTab === "plan" && (
-        <InvestmentPlanPanel investPlan={investPlan} setInvestPlan={setInvestPlan} setSavings={setSavings} savings={savings} showToast={showToast} setDeletedInvestItemIds={setDeletedInvestItemIds} />
+        <InvestmentPlanPanel investPlan={investPlan} setInvestPlan={setInvestPlan} setSavings={setSavings} savings={savings} showToast={showToast} setDeletedInvestItemIds={setDeletedInvestItemIds} expenseCategories={expenseCategories} setExpenseCategories={setExpenseCategories} banks={banks} creditCards={creditCards} setTransactions={setTransactions} transactions={transactions} holdings={holdings} setHoldings={setHoldings} />
       )}
 
       {subTab === "holdings" && (
@@ -1867,23 +1874,49 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
 }
 
 /* ---------------------------------------------------------------- */
-function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, setDeletedDebtIds, setPlanOverrides, showToast }) {
+function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, setDeletedDebtIds, setPlanOverrides, showToast, cardOwedBaseline, setCardOwedBaseline, transactions, cardSettings }) {
   const [debtType, setDebtType] = useState("other");
   const [selectedCard, setSelectedCard] = useState(creditCards[0]?.name || "");
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
   const [dueDate, setDueDate] = useState(todayStr());
   const [recurring, setRecurring] = useState(false);
+  const [installmentCount, setInstallmentCount] = useState("unlimited");
 
   function add() {
     const amt = parseFloat(amount);
-    const finalName = debtType === "credit" ? `บัตรเครดิต ${selectedCard}` : name.trim();
+    if (debtType === "credit") {
+      const finalName = name.trim() || `Card item ${selectedCard}`;
+      if (!amt || amt <= 0) return;
+      const cardDebtId = "cc-card-" + selectedCard;
+      setDebts((prev) => {
+        const idx = prev.findIndex((d) => d.id === cardDebtId);
+        // A newly-added installment shouldn't retroactively pad the cycle
+        // that's already in progress — it starts counting from the cycle
+        // AFTER the card's current due date.
+        const currentCycleYm = idx === -1 ? ymOf(new Date()) : prev[idx].dueDate.slice(0, 7);
+        const startYm = addMonths(currentCycleYm, 1);
+        const lineItem = { id: uid(), name: finalName, amount: amt, totalInstallments: installmentCount === "unlimited" ? null : parseInt(installmentCount, 10), startYm };
+        if (idx === -1) {
+          // Shouldn't normally happen (the sync effect seeds one entry per
+          // configured card), but handle it defensively.
+          return [...prev, { id: cardDebtId, name: `Credit Card ${selectedCard}`, amount: 0, dueDate: todayStr(), recurring: true, paid: false, auto: true, card: selectedCard, lineItems: [lineItem] }];
+        }
+        const nextLineItems = [...(prev[idx].lineItems || []), lineItem];
+        const autoAmt = computeCardOwed(transactions, cardOwedBaseline, cardSettings, selectedCard, currentCycleYm);
+        const newTotal = autoAmt + activeLineItemsTotal(nextLineItems, currentCycleYm);
+        return prev.map((d, i) => (i === idx ? { ...d, lineItems: nextLineItems, amount: newTotal } : d));
+      });
+      setName(""); setAmount("");
+      showToast("Saved successfully ✓ (will start counting next cycle)");
+      return;
+    }
+    const finalName = name.trim();
     if (!amt || amt <= 0 || !finalName) return;
     const item = { id: uid(), name: finalName, amount: amt, dueDate, recurring, paid: false };
-    if (debtType === "credit") item.card = selectedCard;
     setDebts((prev) => [item, ...prev]);
     setName(""); setAmount("");
-    showToast("บันทึกรายการสำเร็จ ✓");
+    showToast("Saved successfully ✓");
   }
   function remove(id) {
     setDebts((prev) => {
@@ -1901,26 +1934,45 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
       setDeletedDebtIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
       return prev.filter((d) => d.id !== id);
     });
-    showToast("ลบรายการสำเร็จ ✓");
+    showToast("Deleted successfully ✓");
   }
   function updateAmount(id, val) {
     const amt = parseFloat(val);
     if (isNaN(amt) || amt < 0) return;
     setDebts((prev) => prev.map((d) => (d.id === id ? { ...d, amount: amt, amountOverridden: d.auto ? true : d.amountOverridden } : d)));
   }
-  function logPaymentTransaction(d, paymentInfo) {
+  function logPaymentTransaction(d, paymentInfo, overrideAmount) {
     const isCreditDebt = !!d.card;
     setTransactions((prev) => [{
       id: uid(), type: "expense",
       category: isCreditDebt ? "creditcard" : "others",
       subcategory: null,
-      amount: d.amount,
+      amount: overrideAmount != null ? overrideAmount : d.amount,
       date: todayStr(),
       payment: paymentInfo.payment,
       bank: paymentInfo.payment === "transfer" ? paymentInfo.bank : null,
       card: null,
       note: d.name,
     }, ...prev]);
+  }
+  // A card's debt entry is a persistent running balance now (like a bank
+  // balance), not a one-off paid/unpaid item — "paying" it settles the
+  // current cycle's total (auto spending + whichever installments are
+  // currently active). Line items naturally phase in/out on their own
+  // schedule as calendar months pass, so paying doesn't need to touch
+  // them — it just cleans up any that have fully finished their run.
+  function payCardDebt(d, paymentInfo) {
+    const cycleYm = d.dueDate.slice(0, 7);
+    const autoAmt = computeCardOwed(transactions, cardOwedBaseline, cardSettings, d.card, cycleYm);
+    const total = autoAmt + activeLineItemsTotal(d.lineItems, cycleYm);
+    if (total <= 0) return;
+    logPaymentTransaction(d, paymentInfo, total);
+    // Advance the baseline only by what was actually billed this cycle
+    // (transactions up to the cutoff) — not the full all-time total, which
+    // would incorrectly also mark not-yet-billed transactions as paid.
+    setCardOwedBaseline((prev) => ({ ...prev, [d.card]: (prev[d.card] || 0) + cardBilledTotal(transactions, cardSettings, d.card, cycleYm) }));
+    setDebts((prev) => prev.map((x) => (x.id === d.id ? { ...x, lineItems: (x.lineItems || []).filter((li) => li.totalInstallments == null || monthsBetweenYm(li.startYm, cycleYm) < li.totalInstallments) } : x)));
+    showToast("Payment saved ✓");
   }
   function togglePaid(id, paymentInfo) {
     setDebts((prev) => prev.map((d) => {
@@ -1942,7 +1994,7 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
       }
       return { ...d, paid: nowPaid };
     }));
-    if (paymentInfo) showToast("บันทึกการชำระสำเร็จ ✓");
+    if (paymentInfo) showToast("Payment saved ✓");
   }
   // Marking a debt as paid needs to know which real payment channel was
   // used so the auto-logged transaction (and any bank-balance deduction)
@@ -1952,16 +2004,69 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
   const [payMethod, setPayMethod] = useState(null);
   const [payBank, setPayBank] = useState(null);
   function startPay(d) {
-    if (d.paid) { togglePaid(d.id); return; }
+    const isCardDebt = d.id.startsWith("cc-card-");
+    if (!isCardDebt && d.paid) { togglePaid(d.id); return; }
     setPendingPayId(d.id); setPayMethod(null); setPayBank(null);
   }
   function confirmPay() {
     if (!payMethod) return;
-    togglePaid(pendingPayId, { payment: payMethod, bank: payMethod === "transfer" ? payBank : null });
+    const d = debts.find((x) => x.id === pendingPayId);
+    const info = { payment: payMethod, bank: payMethod === "transfer" ? payBank : null };
+    if (d && d.id.startsWith("cc-card-")) payCardDebt(d, info);
+    else togglePaid(pendingPayId, info);
     setPendingPayId(null);
   }
+  const [expandedCardId, setExpandedCardId] = useState(null);
+  // Deleting a line item offers two modes: skip just the upcoming cycle
+  // (shortens a fixed plan by one installment and pushes the start forward
+  // one month) or cancel the whole remaining plan (removes it outright).
+  const [pendingDeleteLineItem, setPendingDeleteLineItem] = useState(null); // { cardDebtId, lineItem }
+  function skipOneCycle(cardDebtId, lineItemId) {
+    setDebts((prev) => prev.map((d) => {
+      if (d.id !== cardDebtId) return d;
+      const cycleYm = d.dueDate.slice(0, 7);
+      const nextLineItems = (d.lineItems || [])
+        .map((li) => {
+          if (li.id !== lineItemId) return li;
+          const newStartYm = addMonths(li.startYm, 1);
+          const newTotal = li.totalInstallments == null ? null : Math.max(0, li.totalInstallments - 1);
+          return { ...li, startYm: newStartYm, totalInstallments: newTotal };
+        })
+        .filter((li) => li.totalInstallments == null || li.totalInstallments > 0);
+      const autoAmt = computeCardOwed(transactions, cardOwedBaseline, cardSettings, d.card, cycleYm);
+      return { ...d, lineItems: nextLineItems, amount: autoAmt + activeLineItemsTotal(nextLineItems, cycleYm) };
+    }));
+    showToast("Cycle skipped ✓");
+    setPendingDeleteLineItem(null);
+  }
+  function cancelAllRemaining(cardDebtId, lineItemId) {
+    setDebts((prev) => prev.map((d) => {
+      if (d.id !== cardDebtId) return d;
+      const cycleYm = d.dueDate.slice(0, 7);
+      const nextLineItems = (d.lineItems || []).filter((li) => li.id !== lineItemId);
+      const autoAmt = computeCardOwed(transactions, cardOwedBaseline, cardSettings, d.card, cycleYm);
+      return { ...d, lineItems: nextLineItems, amount: autoAmt + activeLineItemsTotal(nextLineItems, cycleYm) };
+    }));
+    showToast("Deleted successfully ✓");
+    setPendingDeleteLineItem(null);
+  }
+  // Editing a card's total directly (e.g. to match a real statement) needs
+  // to back-solve the baseline anchor, same idea as editing a bank balance:
+  // the lineItems portion stays fixed, only the auto (transaction-derived)
+  // portion absorbs the adjustment.
+  function updateCardTotal(d, val) {
+    const typed = parseFloat(val);
+    if (isNaN(typed) || typed < 0) return;
+    const cycleYm = d.dueDate.slice(0, 7);
+    const lineItemsTotal = activeLineItemsTotal(d.lineItems, cycleYm);
+    const desiredAutoAmt = Math.max(0, typed - lineItemsTotal);
+    const billedTotal = cardBilledTotal(transactions, cardSettings, d.card, cycleYm);
+    setCardOwedBaseline((prev) => ({ ...prev, [d.card]: billedTotal - desiredAutoAmt }));
+    setDebts((prev) => prev.map((x) => (x.id === d.id ? { ...x, amount: typed } : x)));
+    showToast("Amount updated ✓");
+  }
 
-  const sorted = [...debts].filter((d) => !d.dismissed).sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1));
+  const sorted = [...debts].filter((d) => !d.dismissed).sort((a, b) => b.amount - a.amount);
 
   const now = new Date();
   // A recurring debt only ever exists as ONE object with one due date —
@@ -1977,15 +2082,31 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
       const [ty, tm] = targetYm.split("-").map(Number);
       const lastDay = new Date(ty, tm, 0).getDate();
       const projectedDate = toLocalDateStr(new Date(ty, tm - 1, Math.min(day, lastDay)));
-      return { ...d, id: d.id + "-proj-" + targetYm, dueDate: projectedDate, projected: true };
+      const isCardDebt = d.id.startsWith("cc-card-");
+      // A future cycle's amount is knowable — transactions dated after the
+      // CURRENT cycle's cutoff but already recorded belong to that later
+      // statement. But it must be the amount NEWLY billed in that specific
+      // cycle (this cutoff's total minus the previous cutoff's total), not
+      // computeCardOwed's cumulative-minus-baseline — that formula is only
+      // correct for the current real entry; reusing it here would also
+      // drag along the current cycle's still-unpaid balance and double
+      // count it in every future month's projection too.
+      const projectedAmount = isCardDebt
+        ? cardBilledTotal(transactions, cardSettings, d.card, targetYm) - cardBilledTotal(transactions, cardSettings, d.card, addMonths(targetYm, -1)) + activeLineItemsTotal(d.lineItems, targetYm)
+        : d.amount;
+      return { ...d, id: d.id + "-proj-" + targetYm, dueDate: projectedDate, amount: projectedAmount, projected: true };
     }
     return null;
   }
   function monthHasDebt(ym) {
-    return debts.some((d) => !d.dismissed && !d.paid && projectForMonth(d, ym) !== null);
+    return debts.some((d) => {
+      if (d.dismissed || d.paid) return false;
+      const proj = projectForMonth(d, ym);
+      return proj !== null && proj.amount > 0;
+    });
   }
   const summarize = (ym) => {
-    const items = debts.filter((d) => !d.dismissed && !d.paid).map((d) => projectForMonth(d, ym)).filter(Boolean);
+    const items = debts.filter((d) => !d.dismissed && !d.paid).map((d) => projectForMonth(d, ym)).filter((d) => d && d.amount > 0);
     return { total: items.reduce((a, d) => a + Number(d.amount), 0), count: items.length };
   };
   // Show the soonest months that actually have something owed — checking a
@@ -2007,9 +2128,9 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
   const [selectedYm, setSelectedYm] = useState(null);
   const effectiveYm = selectedYm === "__all__" ? null : (selectedYm || upcomingYms[0] || null);
   const listForMonth = effectiveYm
-    ? debts.filter((d) => !d.dismissed).map((d) => projectForMonth(d, effectiveYm)).filter(Boolean).sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1))
+    ? debts.filter((d) => !d.dismissed).map((d) => projectForMonth(d, effectiveYm)).filter(Boolean).sort((a, b) => b.amount - a.amount)
     : sorted;
-  const selectedMonthLabel = effectiveYm ? (() => { const [y, m] = effectiveYm.split("-").map(Number); return `${MONTH_FULL_TH[m - 1]}${y !== now.getFullYear() ? ` ${y + 543}` : ""}`; })() : null;
+  const selectedMonthLabel = effectiveYm ? (() => { const [y, m] = effectiveYm.split("-").map(Number); return `${MONTH_FULL_TH[m - 1]}${y !== now.getFullYear() ? ` ${y}` : ""}`; })() : null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -2020,23 +2141,23 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
           <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setPendingPayId(null)}>
             <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between mb-1">
-                <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">เลือกช่องทางชำระ</p>
+                <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">Select payment method</p>
                 <button onClick={() => setPendingPayId(null)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
               </div>
               <p className="text-xs mb-4" style={{ color: C.inkSoft }}>{payingDebt.name} · {fmtTHB(payingDebt.amount)}</p>
               <div className="grid grid-cols-2 gap-2.5 mb-4">
                 <button onClick={() => { setPayMethod("cash"); setPayBank(null); }} style={{ background: payMethod === "cash" ? C.purple : C.graySoft, color: payMethod === "cash" ? "#fff" : C.inkSoft }} className="flex flex-col items-center gap-1.5 py-3 rounded-2xl text-xs font-bold">
-                  <Banknote size={18} />เงินสด
+                  <Banknote size={18} />Cash
                 </button>
                 <button onClick={() => setPayMethod("transfer")} style={{ background: payMethod === "transfer" ? C.purple : C.graySoft, color: payMethod === "transfer" ? "#fff" : C.inkSoft }} className="flex flex-col items-center gap-1.5 py-3 rounded-2xl text-xs font-bold">
-                  <Landmark size={18} />โอนเงิน
+                  <Landmark size={18} />Transfer
                 </button>
               </div>
               {payMethod === "transfer" && banks.length > 0 && (
                 <div className="mb-4">
-                  <p className="text-xs font-bold mb-2" style={{ color: C.inkSoft }}>เลือกธนาคาร (ไม่บังคับ)</p>
+                  <p className="text-xs font-bold mb-2" style={{ color: C.inkSoft }}>Select bank (optional)</p>
                   <div className="flex flex-wrap gap-1.5">
-                    <button onClick={() => setPayBank(null)} style={{ background: !payBank ? C.purple : C.graySoft, color: !payBank ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">ไม่ระบุ</button>
+                    <button onClick={() => setPayBank(null)} style={{ background: !payBank ? C.purple : C.graySoft, color: !payBank ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">Unspecified</button>
                     {banks.map((b) => (
                       <button key={b.name} onClick={() => setPayBank(b.name)} style={{ background: payBank === b.name ? b.color : C.graySoft, color: payBank === b.name ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">{b.name}</button>
                     ))}
@@ -2044,15 +2165,34 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
                 </div>
               )}
               <button onClick={confirmPay} disabled={!payMethod} style={{ background: payMethod ? `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` : C.graySoft, color: payMethod ? "#fff" : C.inkSoft }} className="w-full py-2.5 rounded-full text-sm font-bold">
-                ยืนยันชำระแล้ว
+                Confirm Payment
               </button>
             </div>
           </div>
         );
       })()}
+      {pendingDeleteLineItem && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setPendingDeleteLineItem(null)}>
+          <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-1">
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">Remove installment</p>
+              <button onClick={() => setPendingDeleteLineItem(null)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
+            </div>
+            <p className="text-xs mb-4" style={{ color: C.inkSoft }}>{pendingDeleteLineItem.lineItem.name} · {fmtTHB(pendingDeleteLineItem.lineItem.amount)}/month</p>
+            <button onClick={() => skipOneCycle(pendingDeleteLineItem.cardDebtId, pendingDeleteLineItem.lineItem.id)} style={{ background: C.graySoft, color: C.ink }} className="w-full py-3 rounded-2xl text-sm font-bold mb-2.5 text-left px-4">
+              Skip next cycle only
+              <span className="block text-[11px] font-normal mt-0.5" style={{ color: C.inkSoft }}>Remaining cycles stay on the original plan</span>
+            </button>
+            <button onClick={() => cancelAllRemaining(pendingDeleteLineItem.cardDebtId, pendingDeleteLineItem.lineItem.id)} style={{ background: C.coralSoft, color: C.coral }} className="w-full py-3 rounded-2xl text-sm font-bold text-left px-4">
+              Delete all remaining
+              <span className="block text-[11px] font-normal mt-0.5" style={{ color: C.coral }}>Cancel this plan permanently — won't count again</span>
+            </button>
+          </div>
+        </div>
+      )}
       {upcomingSummaries.length === 0 ? (
         <div style={{ background: C.tealSoft }} className="rounded-3xl p-4 text-center">
-          <p className="text-sm font-bold" style={{ color: C.teal }}>ไม่มียอดที่ต้องชำระตอนนี้ 🎉</p>
+          <p className="text-sm font-bold" style={{ color: C.teal }}>Nothing due right now 🎉</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3">
@@ -2060,87 +2200,150 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
             const active = s.ym === effectiveYm;
             return (
               <button key={s.ym} onClick={() => setSelectedYm(s.ym)} style={active ? { background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` } : { background: C.card, border: `1.5px solid ${C.graySoft}` }} className="rounded-3xl p-4 text-left">
-                <p className="text-xs mb-1.5" style={{ color: active ? "rgba(255,255,255,0.75)" : C.inkSoft }}>ยอดชำระเดือน{s.name}{s.year !== now.getFullYear() ? ` ${s.year + 543}` : ""}</p>
+                <p className="text-xs mb-1.5" style={{ color: active ? "rgba(255,255,255,0.75)" : C.inkSoft }}>Payment for {s.name}{s.year !== now.getFullYear() ? ` ${s.year}` : ""}</p>
                 <p style={{ fontFamily: "'Prompt', sans-serif", color: active ? "#fff" : C.ink }} className="text-xl mb-1">{fmtTHB(s.total)}</p>
-                <p className="text-[11px]" style={{ color: active ? "rgba(255,255,255,0.75)" : C.inkSoft }}>{s.count} รายการ</p>
+                <p className="text-[11px]" style={{ color: active ? "rgba(255,255,255,0.75)" : C.inkSoft }}>{s.count} items</p>
               </button>
             );
           })}
           {upcomingSummaries.length === 1 && (
             <div style={{ background: C.tealSoft }} className="rounded-3xl p-4 flex items-center justify-center">
-              <p className="text-xs font-bold text-center" style={{ color: C.teal }}>ไม่มียอดค้างชำระเดือนถัดไป</p>
+              <p className="text-xs font-bold text-center" style={{ color: C.teal }}>No balance due next month</p>
             </div>
           )}
         </div>
       )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เพิ่มรายการหนี้สิน / กำหนดชำระ</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Add debt / due date item</p>
         <div className="flex rounded-full overflow-hidden p-1 mb-3.5 w-fit" style={{ background: C.graySoft }}>
-          <button onClick={() => setDebtType("other")} style={{ background: debtType === "other" ? C.purple : "transparent", color: debtType === "other" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">หนี้ทั่วไป</button>
-          <button onClick={() => setDebtType("credit")} style={{ background: debtType === "credit" ? C.purple : "transparent", color: debtType === "credit" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><CreditCard size={14} />บัตรเครดิต</button>
+          <button onClick={() => setDebtType("other")} style={{ background: debtType === "other" ? C.purple : "transparent", color: debtType === "other" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">General Debt</button>
+          <button onClick={() => setDebtType("credit")} style={{ background: debtType === "credit" ? C.purple : "transparent", color: debtType === "credit" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full flex items-center gap-1.5"><CreditCard size={14} />Credit Card</button>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-          <Field label="ชื่อรายการ">
-            {debtType === "credit" ? (
+          <Field label="Item name">
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder={debtType === "credit" ? "e.g. phone installment on card" : "e.g. phone installment"} style={inputStyle} />
+          </Field>
+          {debtType === "credit" && (
+            <Field label="Credit Card">
               <select value={selectedCard} onChange={(e) => setSelectedCard(e.target.value)} style={inputStyle}>
                 {creditCards.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
               </select>
-            ) : (
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น ผ่อนมือถือ" style={inputStyle} />
-            )}
-          </Field>
-          <Field label="จำนวนเงิน (บาท)"><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
-          <Field label="วันครบกำหนด"><input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} style={inputStyle} /></Field>
-          <Field label="รูปแบบ">
-            <button onClick={() => setRecurring((r) => !r)} style={{ background: recurring ? C.purple : C.graySoft, color: recurring ? "#fff" : C.inkSoft }} className="px-3.5 py-2 rounded-full text-sm font-bold flex items-center gap-1.5 w-fit"><Calendar size={13} /> {recurring ? "ชำระทุกเดือน" : "ครั้งเดียว"}</button>
-          </Field>
+            </Field>
+          )}
+          <Field label="Amount (THB)"><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+          {debtType !== "credit" && (
+            <Field label="Due Date"><input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} style={inputStyle} /></Field>
+          )}
+          {debtType === "credit" ? (
+            <Field label="Installments">
+              <select value={installmentCount} onChange={(e) => setInstallmentCount(e.target.value)} style={inputStyle}>
+                <option value="unlimited">Unset (ongoing monthly)</option>
+                {[3, 4, 6, 10, 12].map((n) => <option key={n} value={n}>{n} installments</option>)}
+              </select>
+            </Field>
+          ) : (
+            <Field label="Format">
+              <button onClick={() => setRecurring((r) => !r)} style={{ background: recurring ? C.purple : C.graySoft, color: recurring ? "#fff" : C.inkSoft }} className="px-3.5 py-2 rounded-full text-sm font-bold flex items-center gap-1.5 w-fit"><Calendar size={13} /> {recurring ? "Pay monthly" : "One-time"}</button>
+            </Field>
+          )}
         </div>
-        <button onClick={add} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> เพิ่มรายการ</button>
-        {debtType === "credit" && <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>วันตัดรอบ/ครบกำหนดอัตโนมัติของแต่ละบัตรตั้งได้ที่หน้า "Fix Cost" — รายการนี้ไว้สำหรับกำหนดยอด/วันครบกำหนดแบบระบุเอง</p>}
+        <button onClick={add} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> Add item</button>
       </div>
 
       <div>
         <div className="flex items-center justify-between mb-2.5 flex-wrap gap-2">
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">รายการหนี้สินทั้งหมด{selectedMonthLabel ? ` · เดือน${selectedMonthLabel}` : ""}</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">All Debts{selectedMonthLabel ? ` · ${selectedMonthLabel}` : ""}</p>
           {effectiveYm && (
-            <button onClick={() => setSelectedYm("__all__")} style={{ color: C.purple }} className="text-xs font-bold">ดูทุกเดือน</button>
+            <button onClick={() => setSelectedYm("__all__")} style={{ color: C.purple }} className="text-xs font-bold">View all months</button>
           )}
         </div>
-        {(selectedYm === "__all__" ? sorted : listForMonth).length === 0 ? <EmptyNote text="ยังไม่มีรายการหนี้สินหรือกำหนดชำระ" /> : (
+        {(selectedYm === "__all__" ? sorted : listForMonth).length === 0 ? <EmptyNote text="No debts or due dates yet" /> : (
           <div className="flex flex-col gap-2">
             {(selectedYm === "__all__" ? sorted : listForMonth).map((d) => {
+              const isCardDebt = d.id.startsWith("cc-card-");
               const diff = daysUntil(d.dueDate);
-              let chipBg = C.graySoft, chipColor = C.inkSoft, statusText = `อีก ${diff} วัน`;
-              if (d.projected) { chipBg = C.purpleSoft; chipColor = C.purple; statusText = "คาดการณ์"; }
-              else if (d.paid) { chipBg = C.tealSoft; chipColor = C.teal; statusText = "ชำระแล้ว"; }
-              else if (diff < 0) { chipBg = C.coralSoft; chipColor = C.coral; statusText = `เลย ${Math.abs(diff)} วัน`; }
-              else if (diff <= 3) { chipBg = C.yellowSoft; chipColor = C.yellowDeep; statusText = diff === 0 ? "วันนี้" : `อีก ${diff} วัน`; }
+              let chipBg = C.graySoft, chipColor = C.inkSoft, statusText = `${diff} Days left`;
+              const isDone = isCardDebt ? d.amount <= 0 : d.paid;
+              if (d.projected) { chipBg = C.purpleSoft; chipColor = C.purple; statusText = "Projected"; }
+              else if (isDone) { chipBg = C.tealSoft; chipColor = C.teal; statusText = "Done"; }
+              else if (diff < 0) { chipBg = C.coralSoft; chipColor = C.coral; statusText = "Over due"; }
+              else { chipBg = C.graySoft; chipColor = C.inkSoft; statusText = `${diff} Days left`; }
+              const expanded = expandedCardId === d.id;
               return (
-                <div key={d.id} style={{ background: C.card, opacity: d.projected ? 0.7 : 1 }} className="flex items-center gap-3 px-3.5 py-3 rounded-2xl shadow-sm">
-                  <button onClick={() => !d.projected && startPay(d)} disabled={d.projected} style={{ color: d.paid ? C.teal : C.graySoft, cursor: d.projected ? "default" : "pointer" }} className="shrink-0"><CheckCircle2 size={22} /></button>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold truncate flex items-center gap-1.5" style={{ textDecoration: d.paid ? "line-through" : "none" }}>
-                      {d.card && (() => { const cm = cardMeta(creditCards, d.card); const CIcon = resolveIcon(cm.icon); return <CIcon size={12} color={cm.color} className="shrink-0" />; })()}
-                      {d.name}{d.recurring ? " (รายเดือน)" : ""}{d.auto ? " · อัตโนมัติ" : ""}
-                    </p>
-                    <p className="text-xs" style={{ color: C.inkSoft }}>{d.projected ? "คาดว่าจะครบกำหนด" : "ครบกำหนด"} {thDate(d.dueDate)}</p>
+                <div key={d.id} style={{ background: C.card, opacity: d.projected ? 0.7 : 1 }} className="rounded-2xl shadow-sm overflow-hidden">
+                  <div className="flex items-center gap-3 px-3.5 py-3">
+                    {isCardDebt ? (
+                      <button onClick={() => !d.projected && startPay(d)} disabled={d.projected || d.amount <= 0} title="Pay this amount" style={{ color: d.amount > 0 ? C.graySoft : C.teal, cursor: d.projected || d.amount <= 0 ? "default" : "pointer" }} className="shrink-0"><CheckCircle2 size={22} /></button>
+                    ) : (
+                      <button onClick={() => !d.projected && startPay(d)} disabled={d.projected} style={{ color: d.paid ? C.teal : C.graySoft, cursor: d.projected ? "default" : "pointer" }} className="shrink-0"><CheckCircle2 size={22} /></button>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold truncate flex items-center gap-1.5" style={{ textDecoration: d.paid ? "line-through" : "none" }}>
+                        {d.card && (() => { const cm = cardMeta(creditCards, d.card); const CIcon = resolveIcon(cm.icon); return <CIcon size={12} color={cm.color} className="shrink-0" />; })()}
+                        {d.name}{!isCardDebt && d.recurring ? " (Monthly)" : ""}
+                      </p>
+                      <p className="text-xs truncate" style={{ color: C.inkSoft }}>{isCardDebt ? `Due ${parseLocalDate(d.dueDate).toLocaleDateString("en-US", { day: "numeric", month: "short" })}` : `${d.projected ? "Expected due" : "Due"} ${thDate(d.dueDate)}`}</p>
+                    </div>
+                    <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-bold whitespace-nowrap px-2.5 py-1 rounded-full shrink-0">{statusText}</span>
+                    {isCardDebt ? (
+                      <input type="number" min="0" defaultValue={d.amount} key={d.id + "-amt-" + d.amount}
+                        onBlur={(e) => updateCardTotal(d, e.target.value)}
+                        style={{ ...inputStyle, width: 92, padding: "6px 8px", fontFamily: "'Prompt', sans-serif", fontWeight: 700, textAlign: "right" }} />
+                    ) : d.projected ? (
+                      <p style={{ fontFamily: "'Prompt', sans-serif", width: 92, textAlign: "right" }} className="text-sm font-bold shrink-0">{fmtTHB(d.amount)}</p>
+                    ) : (
+                      <input type="number" min="0" defaultValue={d.amount} key={d.id + "-amt-" + d.amount}
+                        onBlur={(e) => updateAmount(d.id, e.target.value)}
+                        style={{ ...inputStyle, width: 92, padding: "6px 8px", fontFamily: "'Prompt', sans-serif", fontWeight: 700, textAlign: "right" }} />
+                    )}
+                    {isCardDebt ? (
+                      <button onClick={() => setExpandedCardId(expanded ? null : d.id)} style={{ color: C.inkSoft }} className="p-1 shrink-0">
+                        {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                      </button>
+                    ) : (
+                      <button onClick={() => !d.projected && remove(d.id)} disabled={d.projected} style={{ color: d.projected ? C.graySoft : C.gray }} className="p-1 shrink-0"><Trash2 size={14} /></button>
+                    )}
                   </div>
-                  <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-bold whitespace-nowrap px-2.5 py-1 rounded-full shrink-0">{statusText}</span>
-                  {d.projected ? (
-                    <p style={{ fontFamily: "'Prompt', sans-serif", width: 92, textAlign: "right" }} className="text-sm font-bold shrink-0">{fmtTHB(d.amount)}</p>
-                  ) : (
-                    <input type="number" min="0" defaultValue={d.amount} key={d.id + "-amt-" + d.amount}
-                      onBlur={(e) => updateAmount(d.id, e.target.value)}
-                      style={{ ...inputStyle, width: 92, padding: "6px 8px", fontFamily: "'Prompt', sans-serif", fontWeight: 700, textAlign: "right" }} />
+                  {isCardDebt && expanded && (
+                    <div style={{ background: C.bg }} className="px-3.5 py-3 flex flex-col gap-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span style={{ color: C.inkSoft }}>Card spending (unpaid)</span>
+                        <span style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">{fmtTHB(computeCardOwed(transactions, cardOwedBaseline, cardSettings, d.card, d.dueDate.slice(0, 7)))}</span>
+                      </div>
+                      {(d.lineItems || []).length === 0 ? (
+                        <p className="text-[11px]" style={{ color: C.inkSoft }}>No installment items set for this card yet</p>
+                      ) : (d.lineItems || []).map((li) => {
+                        const cycleYm = d.dueDate.slice(0, 7);
+                        const active = lineItemActiveFor(li, cycleYm);
+                        const elapsed = li.startYm ? monthsBetweenYm(li.startYm, cycleYm) : 0;
+                        let progressText = "";
+                        if (li.totalInstallments != null) {
+                          progressText = active ? `Installment ${elapsed + 1}/${li.totalInstallments}` : (elapsed < 0 ? `Starts ${monthLabel(li.startYm)}` : "Fully paid");
+                        } else {
+                          progressText = active ? "Monthly (no end date)" : `Starts ${monthLabel(li.startYm)}`;
+                        }
+                        return (
+                          <div key={li.id} className="flex items-center justify-between text-xs" style={{ opacity: active ? 1 : 0.55 }}>
+                            <div className="min-w-0">
+                              <p className="truncate">{li.name}</p>
+                              <p className="text-[10px]" style={{ color: C.inkSoft }}>{progressText}</p>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">{fmtTHB(li.amount)}</span>
+                              <button onClick={() => setPendingDeleteLineItem({ cardDebtId: d.id, lineItem: li })} style={{ color: C.gray }}><Trash2 size={12} /></button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
-                  <button onClick={() => !d.projected && remove(d.id)} disabled={d.projected} style={{ color: d.projected ? C.graySoft : C.gray }} className="p-1 shrink-0"><Trash2 size={14} /></button>
                 </div>
               );
             })}
           </div>
         )}
-        <p className="text-[11px] mt-2.5" style={{ color: C.inkSoft }}>แก้ไขยอดได้ตรงๆ ในช่องตัวเลข (ยอดบัตรเครดิต/ผ่อนบ้านที่ซิงก์อัตโนมัติจะไม่ถูกคำนวณทับอีกหลังแก้ไข) กดติ๊กถูกเมื่อชำระแล้วจะให้เลือกช่องทางชำระก่อน แล้วระบบจะบันทึกเป็นรายการรายจ่ายในหน้า "รายรับ-จ่าย" ให้อัตโนมัติตามช่องทางที่เลือก (บัตรเครดิต → หมวด Credit Card, หนี้ทั่วไป → หมวดอื่นๆ พร้อมชื่อรายการในโน้ต) ค่างวดผ่อนบ้านจะถูกตั้งเป็นรายการหนี้รายเดือนให้อัตโนมัติจากหน้า "Home Loan" เช่นกัน รายการที่ขึ้น "คาดการณ์" คือบิลรายเดือนที่จะครบกำหนดในเดือนนั้นๆ ตามรอบ แต่ยังไม่ใช่รายการจริงจนกว่าจะถึงรอบและจ่ายรอบก่อนหน้าแล้ว</p>
+        <p className="text-[11px] mt-2.5" style={{ color: C.inkSoft }}>For general/home loan debts, edit the amount directly in the number field. Check the box when paid to select a payment method first, then it logs as an expense automatically. **Each credit card always has just 1 item** — the card's current balance due (card spending + set installments). Tap the wallet button to pay the full amount, tap the arrow to see what's included</p>
       </div>
     </div>
   );
@@ -2153,7 +2356,7 @@ function BudgetsTab({ budgets, setBudgets, monthSpend, expenseCategories }) {
   return (
     <div className="flex flex-col gap-4">
       <div style={{ background: C.blueSoft, color: "#1E5A7C" }} className="rounded-2xl px-4 py-3 text-sm font-semibold">
-        ตั้งวงเงินงบประมาณรายเดือนต่อหมวดหมู่ ระบบจะแจ้งเตือนเมื่อใช้จ่ายใกล้หรือครบตามวงเงินที่ตั้งไว้
+        Set a monthly budget limit per category — you'll get alerted when spending gets close to or hits the limit
       </div>
       <div className="flex flex-col gap-2">
         {expenseCategories.map((c) => {
@@ -2168,15 +2371,15 @@ function BudgetsTab({ budgets, setBudgets, monthSpend, expenseCategories }) {
               <div className="flex items-center gap-3 mb-2">
                 <div style={{ background: color }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><Icon size={15} color="#fff" /></div>
                 <p className="text-sm font-bold flex-1">{c.label}</p>
-                <input type="number" min="0" placeholder="ไม่กำหนด" defaultValue={limit ?? ""} onBlur={(e) => setLimit(c.key, e.target.value)} style={{ ...inputStyle, width: 110 }} />
+                <input type="number" min="0" placeholder="Unset" defaultValue={limit ?? ""} onBlur={(e) => setLimit(c.key, e.target.value)} style={{ ...inputStyle, width: 110 }} />
               </div>
               {limit ? (
                 <div>
                   <div style={{ background: C.graySoft, height: 8, borderRadius: 6 }}><div style={{ width: `${pct}%`, background: barColor, height: 8, borderRadius: 6 }} /></div>
-                  <p className="text-[11px] mt-1 font-semibold" style={{ color: C.inkSoft }}>{fmtTHB(spent)} จาก {fmtTHB(limit)} ({pct}%)</p>
+                  <p className="text-[11px] mt-1 font-semibold" style={{ color: C.inkSoft }}>{fmtTHB(spent)} of {fmtTHB(limit)} ({pct}%)</p>
                 </div>
               ) : (
-                <p className="text-[11px] font-semibold" style={{ color: C.inkSoft }}>ใช้จ่ายเดือนนี้ {fmtTHB(spent)} — ยังไม่ได้ตั้งวงเงิน</p>
+                <p className="text-[11px] font-semibold" style={{ color: C.inkSoft }}>Spent this month {fmtTHB(spent)} — no limit set</p>
               )}
             </div>
           );
@@ -2239,84 +2442,84 @@ function MonthlyPlanTab({
       </div>
 
       <div style={{ background: `linear-gradient(135deg, ${C.pink}, #D6478E)` }} className="rounded-3xl p-5 text-white shadow-sm">
-        <p className="text-xs font-semibold opacity-90 mb-1">คงเหลือใช้ได้ตอนนี้ (หลังหักรายจ่ายที่บันทึกจริง)</p>
+        <p className="text-xs font-semibold opacity-90 mb-1">Available now (after actual logged expenses)</p>
         <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(remainingNow)}</p>
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <SummaryMini label="รายรับตามแผน" value={totalIncome} />
-          <SummaryMini label="Fix cost" value={totalFixCost} sub={`${fixPct}% ของรายรับ`} />
-          <SummaryMini label="หนี้ครบกำหนดเดือนนี้" value={totalDebt} />
-          <SummaryMini label="ออม+ลงทุน" value={savingAmt + investAmt} />
+          <SummaryMini label="Planned Income" value={totalIncome} />
+          <SummaryMini label="Fix cost" value={totalFixCost} sub={`${fixPct}% of income`} />
+          <SummaryMini label="Debts due this month" value={totalDebt} />
+          <SummaryMini label="Save+Invest" value={savingAmt + investAmt} />
         </div>
       </div>
 
       {totalCredit > 0 && (
         <div style={{ background: C.yellowSoft, color: "#7A5B00" }} className="rounded-2xl px-4 py-3 text-sm font-semibold flex items-start gap-2">
           <Info size={16} className="shrink-0 mt-0.5" />
-          <span>ใช้จ่ายผ่านบัตรเครดิตเดือนนี้รวม {fmtTHB(totalCredit)} — ระบบจะตั้งเป็นรายการหนี้ที่ต้องจ่ายในเดือนหน้าให้อัตโนมัติ ({Object.entries(actualCreditByCard).map(([c, v]) => `${c} ${fmtTHB(v)}`).join(", ")})</span>
+          <span>Total credit card spending this month {fmtTHB(totalCredit)} — the system will set this as a debt due next month automatically ({Object.entries(actualCreditByCard).map(([c, v]) => `${c} ${fmtTHB(v)}`).join(", ")})</span>
         </div>
       )}
 
       {extraIncomeLogged > 0 && (
-        <p className="text-xs px-1" style={{ color: C.inkSoft }}>* มีรายรับพิเศษที่บันทึกไว้ในหน้ารายรับ-รายจ่ายเดือนนี้อีก {fmtTHB(extraIncomeLogged)} (ไม่รวมในแผนนี้)</p>
+        <p className="text-xs px-1" style={{ color: C.inkSoft }}>* There's extra income logged on the Transactions page this month, {fmtTHB(extraIncomeLogged)} (not included in this plan)</p>
       )}
 
       {totalIncome > 0 && fixPct > 50 && (
         <div style={{ background: C.coral, color: "#fff" }} className="rounded-2xl px-4 py-3 text-sm font-semibold flex items-start gap-2 shadow-sm">
           <AlertTriangle size={16} className="shrink-0 mt-0.5" />
-          <span>Fix Cost เดือนนี้รวม {fmtTHB(totalFixCost)} คิดเป็น {fixPct}% ของรายรับ — เกินครึ่งหนึ่งของรายได้แล้ว ลองพิจารณาลดรายจ่ายประจำหรือเพิ่มรายรับ</span>
+          <span>Total Fix Cost this month {fmtTHB(totalFixCost)}, {fixPct}% of income — over half your income. Consider reducing recurring expenses or increasing income</span>
         </div>
       )}
 
       <PlanSection
-        title="รายรับที่วางแผน" color={C.teal} icon={TrendingUp}
+        title="Planned income" color={C.teal} icon={TrendingUp}
         items={incomeItems} setItems={setPlanIncomeItems}
         overrides={planOverrides} setOverrides={setPlanOverrides} ym={ym}
         typePresets={INCOME_TYPE_PRESETS} total={totalIncome}
       />
 
       <PlanSection
-        title="รายการ Fix Cost" color={C.coral} icon={ClipboardList}
+        title="Fix Cost item" color={C.coral} icon={ClipboardList}
         items={fixItems} setItems={setPlanFixCostItems}
         overrides={planOverrides} setOverrides={setPlanOverrides} ym={ym}
         typePresets={FIXCOST_TYPE_PRESETS} total={totalFixCost}
-        extraNote={totalIncome > 0 ? `คิดเป็น ${fixPct}% ของรายรับเดือนนี้` : null}
+        extraNote={totalIncome > 0 ? `${fixPct}% of income this month` : null}
       />
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold flex items-center gap-2"><Bell size={16} color={C.yellowDeep} />หนี้ที่ต้องชำระเดือนนี้</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold flex items-center gap-2"><Bell size={16} color={C.yellowDeep} />Debts due this month</p>
           <span style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold">{fmtTHB(totalDebt)}</span>
         </div>
-        {debtsThisMonth.length === 0 ? <EmptyNote text="ไม่มีรายการหนี้ครบกำหนดเดือนนี้" /> : (
+        {debtsThisMonth.length === 0 ? <EmptyNote text="No debts due this month" /> : (
           <div className="flex flex-col gap-2">
             {debtsThisMonth.map((d) => (
               <div key={d.id} className="flex items-center gap-2.5 text-sm">
                 <span style={{ background: d.paid ? C.teal : C.coral }} className="w-2 h-2 rounded-full shrink-0" />
-                <span className="flex-1 font-semibold truncate">{d.name}{d.auto ? " · อัตโนมัติจากบัตรเครดิต" : ""}</span>
+                <span className="flex-1 font-semibold truncate">{d.name}{d.auto ? " · auto from credit card" : ""}</span>
                 <span style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">{fmtTHB(d.amount)}</span>
               </div>
             ))}
           </div>
         )}
-        <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>ข้อมูลชุดเดียวกับหน้า "หนี้สิน" — จัดการเพิ่ม/แก้ไข/มาร์คจ่ายแล้วได้ที่แท็บหนี้สิน</p>
+        <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>Same data as the "Debts" page — add/edit/mark paid on the Debts tab</p>
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เป้าหมายออม & ลงทุนต่อเดือน</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Monthly saving & investing goal</p>
         <div className="flex flex-col gap-3">
-          <AllocationRow label="เงินออม" color={C.teal} icon={PiggyBank} alloc={savingsPlan.saving}
+          <AllocationRow label="Savings" color={C.teal} icon={PiggyBank} alloc={savingsPlan.saving}
             onChange={(alloc) => setSavingsPlan((p) => ({ ...p, saving: alloc }))} amount={savingAmt} />
-          <AllocationRow label="เงินลงทุน" color={C.blue} icon={TrendingUp} alloc={savingsPlan.invest}
+          <AllocationRow label="Investment" color={C.blue} icon={TrendingUp} alloc={savingsPlan.invest}
             onChange={(alloc) => setSavingsPlan((p) => ({ ...p, invest: alloc }))} amount={investAmt} />
         </div>
         <p className="text-[11px] mt-3 flex items-center gap-1.5" style={{ color: C.inkSoft }}>
-          <CheckCircle2 size={13} color={C.teal} /> ระบบซิงก์ยอดนี้เข้าหน้า "ออม & ลงทุน" ให้อัตโนมัติทุกเดือน
+          <CheckCircle2 size={13} color={C.teal} /> This amount syncs into the "Saving & Investing" page automatically every month
         </p>
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <button onClick={() => setShowSettings((s) => !s)} className="w-full flex items-center justify-between">
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold flex items-center gap-2"><Settings size={16} />ตั้งค่าวันตัดรอบ/ครบกำหนดบัตรเครดิต</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold flex items-center gap-2"><Settings size={16} />Set credit card cutoff/due dates</p>
           {showSettings ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </button>
         {showSettings && (
@@ -2329,13 +2532,13 @@ function MonthlyPlanTab({
                   <div style={{ background: card.color }} className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"><CardIcon size={13} color="#fff" /></div>
                   <p className="text-sm font-bold w-20 shrink-0">{card.name}</p>
                   <div className="flex items-center gap-1.5 text-xs" style={{ color: C.inkSoft }}>
-                    วันตัดรอบ
+                    Cutoff day
                     <input type="number" min="1" max="31" value={cs.cutoffDay}
                       onChange={(e) => setCardSettings((p) => ({ ...p, [card.name]: { ...cs, cutoffDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) } }))}
                       style={{ ...inputStyle, width: 55 }} />
                   </div>
                   <div className="flex items-center gap-1.5 text-xs" style={{ color: C.inkSoft }}>
-                    วันครบกำหนดชำระ
+                    Due day
                     <input type="number" min="1" max="31" value={cs.dueDay}
                       onChange={(e) => setCardSettings((p) => ({ ...p, [card.name]: { ...cs, dueDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) } }))}
                       style={{ ...inputStyle, width: 55 }} />
@@ -2345,7 +2548,7 @@ function MonthlyPlanTab({
             })}
           </div>
         )}
-        <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>แต่ละบัตรตัดรอบและครบกำหนดชำระคนละวันได้ ระบบจะรวมยอดตามรอบบิลจริงของบัตรนั้นๆ แล้วตั้งเป็นหนี้ที่ต้องจ่ายให้อัตโนมัติที่แท็บ "หนี้สิน"</p>
+        <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>Each card can have its own cutoff/due date. The system totals each card's real billing cycle and sets it as a debt due on the "Debts" tab automatically</p>
       </div>
     </div>
   );
@@ -2390,12 +2593,12 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
 
   function add() {
     const amt = parseFloat(amount);
-    if (!name.trim()) { setError("กรอกชื่อรายการก่อนนะครับ"); return; }
-    if (!amt || amt <= 0) { setError("กรอกจำนวนเงินให้มากกว่า 0"); return; }
+    if (!name.trim()) { setError("Please enter an item name first"); return; }
+    if (!amt || amt <= 0) { setError("Enter an amount greater than 0"); return; }
     const collision = items.find((i) => i.auto && i.name.trim().toLowerCase() === name.trim().toLowerCase());
-    if (collision) { setError(`มีรายการ "${collision.name}" ที่ซิงก์อัตโนมัติอยู่แล้ว ไม่ต้องเพิ่มซ้ำ — แก้ไขยอดของรายการเดิมได้เลย`); return; }
+    if (collision) { setError(`"${collision.name}" is already auto-synced — no need to add it again, just edit the existing item's amount`); return; }
     setError("");
-    const item = { id: uid(), name: name.trim(), type: type.trim() || "อื่นๆ", amount: amt, recurring };
+    const item = { id: uid(), name: name.trim(), type: type.trim() || "Other", amount: amt, recurring };
     if (!recurring) item.month = ym;
     setItems((prev) => [...prev, item]);
     setName(""); setType(""); setAmount("");
@@ -2427,7 +2630,7 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
       </div>
       {extraNote && <p className="text-xs font-semibold mb-3" style={{ color }}>{extraNote}</p>}
 
-      {items.length === 0 ? <EmptyNote text="ยังไม่มีรายการ" /> : (
+      {items.length === 0 ? <EmptyNote text="No items yet" /> : (
         <div className="flex flex-col gap-2 mb-3.5">
           {items.map((item) => {
             const eff = effectiveAmount(item, ym, overrides);
@@ -2437,20 +2640,20 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-bold truncate flex items-center gap-1.5">
                     {item.name}
-                    {item.auto && <span style={{ background: C.brownSoft, color: C.brown }} className="text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap">ซิงก์จากผ่อนบ้าน</span>}
+                    {item.auto && <span style={{ background: C.brownSoft, color: C.brown }} className="text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap">Synced from Home Loan</span>}
                   </p>
                   <p className="text-[11px] flex items-center gap-1 flex-wrap" style={{ color: C.inkSoft }}>
-                    <span>{item.type}</span><span>·</span><span>{item.recurring ? "ทุกเดือน" : `เฉพาะ ${monthLabel(item.month)}`}</span>
-                    {overridden && <span style={{ color }} className="font-bold">· แก้ไขเฉพาะเดือนนี้</span>}
+                    <span>{item.type}</span><span>·</span><span>{item.recurring ? "Monthly" : `${monthLabel(item.month)} only`}</span>
+                    {overridden && <span style={{ color }} className="font-bold">· edit this month only</span>}
                   </p>
                 </div>
                 <input type="number" min="0" defaultValue={eff} key={ym + item.id + eff}
                   onBlur={(e) => updateAmount(item, e.target.value)} style={{ ...inputStyle, width: 100 }} />
                 {overridden && (
-                  <button onClick={() => resetOverride(item)} title="รีเซ็ตเป็นค่าเริ่มต้น" style={{ color: C.inkSoft }} className="p-1"><RotateCcw size={13} /></button>
+                  <button onClick={() => resetOverride(item)} title="Reset to default" style={{ color: C.inkSoft }} className="p-1"><RotateCcw size={13} /></button>
                 )}
                 {item.auto ? (
-                  <span title="จัดการรายการนี้ได้ที่แท็บ 'ผ่อนบ้าน'" style={{ color: C.graySoft }} className="p-1"><Lock size={13} /></span>
+                  <span title="Manage this item on the 'Home Loan' tab" style={{ color: C.graySoft }} className="p-1"><Lock size={13} /></span>
                 ) : (
                   <button onClick={() => remove(item.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={13} /></button>
                 )}
@@ -2462,20 +2665,20 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
 
       <div className="flex flex-wrap gap-2 items-end">
         <div className="w-full sm:w-auto flex-1 min-w-[120px]">
-          <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>ชื่อรายการ</label>
-          <input value={name} onChange={(e) => { setName(e.target.value); setError(""); }} placeholder="ชื่อ" style={inputStyle} />
+          <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>Item name</label>
+          <input value={name} onChange={(e) => { setName(e.target.value); setError(""); }} placeholder="Name" style={inputStyle} />
         </div>
         <div className="w-full sm:w-auto flex-1 min-w-[120px]">
-          <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>ประเภท</label>
-          <input value={type} onChange={(e) => setType(e.target.value)} placeholder="ประเภท" list={listId} style={inputStyle} />
+          <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>Type</label>
+          <input value={type} onChange={(e) => setType(e.target.value)} placeholder="Type" list={listId} style={inputStyle} />
           <datalist id={listId}>{typePresets.map((p) => <option key={p} value={p} />)}</datalist>
         </div>
         <div className="w-28">
-          <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>จำนวนเงิน</label>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>Amount</label>
           <input type="number" min="0" value={amount} onChange={(e) => { setAmount(e.target.value); setError(""); }} placeholder="0.00" style={inputStyle} />
         </div>
         <button onClick={() => setRecurring((r) => !r)} style={{ background: recurring ? color : C.graySoft, color: recurring ? "#fff" : C.inkSoft }} className="px-3 py-2 rounded-full text-xs font-bold whitespace-nowrap">
-          {recurring ? "ทุกเดือน" : "เดือนนี้เดือนเดียว"}
+          {recurring ? "Monthly" : "This month only"}
         </button>
         <button onClick={add} style={{ background: color, color: "#fff" }} className="p-2.5 rounded-full shrink-0"><Plus size={16} /></button>
       </div>
@@ -2487,8 +2690,8 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
 /* ---------------------------------------------------------------- */
 /*  Investment Plan (portfolio allocation + scheduled reminders)     */
 /* ---------------------------------------------------------------- */
-const MONTH_ABBR_TH = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
-const MONTH_FULL_TH = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"];
+const MONTH_ABBR_TH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH_FULL_TH = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 function nextMonthlyDate(day) {
   const now = new Date();
@@ -2532,15 +2735,15 @@ function nextCustomMonthDate(dateStr, months) {
   return toLocalDateStr(new Date(year, nextMonth - 1, Math.min(day, lastDay)));
 }
 function freqLabel(n) {
-  return n === 1 ? "ทุกเดือน" : `ทุก ${n} เดือน`;
+  return n === 1 ? "Monthly" : `Every ${n} months`;
 }
 
-function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, showToast, setDeletedInvestItemIds }) {
+function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, showToast, setDeletedInvestItemIds, expenseCategories, setExpenseCategories, banks = [], creditCards = [], setTransactions, transactions, holdings, setHoldings }) {
   const { totalPool, items } = investPlan;
   const [subView, setSubView] = useState("items");
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
-  const [mode, setMode] = useState("percent");
+  const [mode, setMode] = useState("thb");
   const [value, setValue] = useState("");
   const [scheduleType, setScheduleType] = useState("monthly");
   const [scheduleMode, setScheduleMode] = useState("interval");
@@ -2563,7 +2766,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
       : scheduleMode === "custom" ? nextCustomMonthDateFromToday(customMonths, day)
       : nextMonthlyDate(day);
     const item = {
-      id: uid(), name: name.trim(), category: category.trim() || "อื่นๆ",
+      id: uid(), name: name.trim(), category: category.trim() || "Other",
       mode, value: val, date: itemDate, time, recurring: scheduleType === "monthly",
       scheduleMode: scheduleType === "monthly" ? scheduleMode : "interval",
       intervalMonths: scheduleType === "monthly" && scheduleMode === "interval" ? Math.max(1, Math.min(12, parseInt(intervalMonths) || 1)) : 1,
@@ -2572,20 +2775,57 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
     };
     setInvestPlan((p) => ({ ...p, items: [...p.items, item] }));
     setName(""); setCategory(""); setValue("");
-    showToast("บันทึกรายการสำเร็จ ✓");
+    showToast("Saved successfully ✓");
   }
   function removeItem(id) {
     setInvestPlan((p) => ({ ...p, items: p.items.filter((i) => i.id !== id) }));
     setDeletedInvestItemIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
-    showToast("ลบรายการสำเร็จ ✓");
+    showToast("Deleted successfully ✓");
   }
   function updateItem(id, patch) {
     setInvestPlan((p) => ({ ...p, items: p.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
   }
-  function markExecuted(item) {
+  // Some months you just don't invest in a particular item — skip it
+  // forward to the next cycle without creating any transaction/savings/
+  // portfolio record, unlike marking it executed.
+  function skipItem(item) {
+    if (!item.recurring) return;
+    const nextDate = item.scheduleMode === "custom" && item.months?.length
+      ? nextCustomMonthDate(item.date, item.months)
+      : addMonthsToDate(item.date, item.intervalMonths || 1);
+    updateItem(item.id, { date: nextDate });
+    showToast("Cycle skipped ✓");
+  }
+  function markExecuted(item, paymentInfo) {
     const ym = item.date.slice(0, 7);
     const amt = investItemAmount(item, totalPool, ym, investPlan.overrides);
     setSavings((prev) => [{ id: uid(), kind: "investment", name: item.name, amount: amt, date: item.date, target: null, note: item.category }, ...prev]);
+    // Ensure the "Investment" category exists for accounts that predate
+    // this feature, then log the actual expense transaction — same pattern
+    // as marking a debt paid.
+    if (!expenseCategories.some((c) => c.key === "investment")) {
+      setExpenseCategories((prev) => [...prev, { key: "investment", label: "Investment", icon: "TrendingUp", color: "#4FB6E8", subcategories: [] }]);
+    }
+    setTransactions((prev) => [{
+      id: uid(), type: "expense", category: "investment", subcategory: null,
+      amount: amt, date: todayStr(),
+      payment: paymentInfo.payment,
+      bank: paymentInfo.payment === "transfer" ? paymentInfo.bank : null,
+      card: paymentInfo.payment === "credit" ? paymentInfo.card : null,
+      note: item.name,
+    }, ...prev]);
+    // Also roll this into Portfolio — same-named holding gets topped up
+    // (both invested and current move together for the new money) rather
+    // than creating a duplicate entry.
+    setHoldings((prev) => {
+      const idx = prev.findIndex((h) => h.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+      if (idx === -1) {
+        return [{ id: uid(), name: item.name, category: item.category || "Other", invested: amt, current: amt, date: item.date }, ...prev];
+      }
+      const next = [...prev];
+      next[idx] = { ...next[idx], invested: next[idx].invested + amt, current: next[idx].current + amt };
+      return next;
+    });
     if (item.recurring) {
       const nextDate = item.scheduleMode === "custom" && item.months?.length
         ? nextCustomMonthDate(item.date, item.months)
@@ -2594,6 +2834,25 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
     } else {
       updateItem(item.id, { executed: true });
     }
+    showToast("Investment saved ✓");
+  }
+  // Marking an item as invested needs a real payment channel (mirrors the
+  // Debts page) so the auto-logged transaction is accurate — opens a picker
+  // instead of assuming a channel. Investment additionally allows credit
+  // card, unlike Debts where paying via credit doesn't make sense.
+  const [pendingExecItem, setPendingExecItem] = useState(null);
+  const [execPayMethod, setExecPayMethod] = useState(null);
+  const [execPayBank, setExecPayBank] = useState(null);
+  const [execPayCard, setExecPayCard] = useState(null);
+  function startExecute(item) {
+    if (item.executed) return;
+    setPendingExecItem(item); setExecPayMethod(null); setExecPayBank(null); setExecPayCard(null);
+  }
+  function confirmExecute() {
+    if (!execPayMethod) return;
+    if (execPayMethod === "credit" && !execPayCard) return;
+    markExecuted(pendingExecItem, { payment: execPayMethod, bank: execPayBank, card: execPayCard });
+    setPendingExecItem(null);
   }
 
   const totalAllocated = items.reduce((a, i) => a + investItemAmount(i, totalPool), 0);
@@ -2602,16 +2861,56 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
 
   return (
     <div className="flex flex-col gap-4">
-      <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-5 text-white shadow-sm">
-        <p className="text-xs font-semibold opacity-90 mb-1">ยอดเงินลงทุนทั้งหมด</p>
-        <input type="number" min="0" value={totalPool || ""} onChange={(e) => setTotalPool(e.target.value)} placeholder="0.00"
-          style={{ background: "rgba(255,255,255,0.18)", border: "none", borderRadius: 12, padding: "8px 12px", color: "#fff", fontFamily: "'Prompt', sans-serif", fontWeight: 700, fontSize: 22, width: "100%" }} />
-        <div className="grid grid-cols-2 gap-2 text-xs mt-3">
-          <SummaryMini label="จัดสรรแล้ว" value={totalAllocated} />
-          <SummaryMini label={remaining < 0 ? "เกินงบที่ตั้งไว้" : "ยังไม่ได้จัดสรร"} value={Math.abs(remaining)} />
+      {pendingExecItem && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setPendingExecItem(null)}>
+          <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 360, width: "100%" }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-1">
+              <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">Select payment method</p>
+              <button onClick={() => setPendingExecItem(null)} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
+            </div>
+            <p className="text-xs mb-4" style={{ color: C.inkSoft }}>{pendingExecItem.name} · {fmtTHB(investItemAmount(pendingExecItem, totalPool, pendingExecItem.date.slice(0, 7), investPlan.overrides))}</p>
+            <div className="grid grid-cols-3 gap-2.5 mb-4">
+              <button onClick={() => { setExecPayMethod("cash"); setExecPayBank(null); setExecPayCard(null); }} style={{ background: execPayMethod === "cash" ? C.purple : C.graySoft, color: execPayMethod === "cash" ? "#fff" : C.inkSoft }} className="flex flex-col items-center gap-1.5 py-3 rounded-2xl text-xs font-bold">
+                <Banknote size={18} />Cash
+              </button>
+              <button onClick={() => { setExecPayMethod("transfer"); setExecPayCard(null); }} style={{ background: execPayMethod === "transfer" ? C.purple : C.graySoft, color: execPayMethod === "transfer" ? "#fff" : C.inkSoft }} className="flex flex-col items-center gap-1.5 py-3 rounded-2xl text-xs font-bold">
+                <Landmark size={18} />Transfer
+              </button>
+              <button onClick={() => { setExecPayMethod("credit"); setExecPayBank(null); }} style={{ background: execPayMethod === "credit" ? C.purple : C.graySoft, color: execPayMethod === "credit" ? "#fff" : C.inkSoft }} className="flex flex-col items-center gap-1.5 py-3 rounded-2xl text-xs font-bold">
+                <CreditCard size={18} />Credit Card
+              </button>
+            </div>
+            {execPayMethod === "transfer" && banks.length > 0 && (
+              <div className="mb-4">
+                <p className="text-xs font-bold mb-2" style={{ color: C.inkSoft }}>Select bank (optional)</p>
+                <div className="flex flex-wrap gap-1.5">
+                  <button onClick={() => setExecPayBank(null)} style={{ background: !execPayBank ? C.purple : C.graySoft, color: !execPayBank ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">Unspecified</button>
+                  {banks.map((b) => (
+                    <button key={b.name} onClick={() => setExecPayBank(b.name)} style={{ background: execPayBank === b.name ? b.color : C.graySoft, color: execPayBank === b.name ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">{b.name}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {execPayMethod === "credit" && (
+              <div className="mb-4">
+                <p className="text-xs font-bold mb-2" style={{ color: C.inkSoft }}>Select card</p>
+                {creditCards.length === 0 ? (
+                  <p className="text-xs" style={{ color: C.inkSoft }}>No credit cards yet — add one on the Settings page</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {creditCards.map((c) => (
+                      <button key={c.name} onClick={() => setExecPayCard(c.name)} style={{ background: execPayCard === c.name ? c.color : C.graySoft, color: execPayCard === c.name ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">{c.name}</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            <button onClick={confirmExecute} disabled={!execPayMethod || (execPayMethod === "credit" && !execPayCard)} style={{ background: (execPayMethod && !(execPayMethod === "credit" && !execPayCard)) ? `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` : C.graySoft, color: (execPayMethod && !(execPayMethod === "credit" && !execPayCard)) ? "#fff" : C.inkSoft }} className="w-full py-2.5 rounded-full text-sm font-bold">
+              Confirm Invested
+            </button>
+          </div>
         </div>
-      </div>
-
+      )}
       <div className="flex rounded-full overflow-hidden p-1 w-fit" style={{ background: C.graySoft }}>
         <button onClick={() => setSubView("items")} style={{ background: subView === "items" ? C.card : "transparent" }} className="px-3.5 py-1.5 text-xs font-bold rounded-full shadow-sm">Items</button>
         <button onClick={() => setSubView("monthly")} style={{ background: subView === "monthly" ? C.card : "transparent" }} className="px-3.5 py-1.5 text-xs font-bold rounded-full flex items-center gap-1"><Calendar size={12} />Monthly Plan</button>
@@ -2622,7 +2921,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
       <>
       {pieData.length > 0 && (
         <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">สัดส่วนพอร์ตการลงทุน</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Portfolio allocation</p>
           <div className="flex flex-col sm:flex-row items-center gap-4">
             <div style={{ width: "100%", maxWidth: 200, height: 190 }}>
               <ResponsiveContainer>
@@ -2647,8 +2946,8 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
       )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">รายการลงทุน</p>
-        {items.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุน — เพิ่มรายการแรกด้านล่าง" /> : (
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Investment item</p>
+        {items.length === 0 ? <EmptyNote text="No investment items yet — add your first one below" /> : (
           <div className="flex flex-col gap-2 mb-1">
             {items.map((item) => {
               const amt = investItemAmount(item, totalPool, item.date.slice(0, 7), investPlan.overrides);
@@ -2668,15 +2967,15 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
                         {item.recurring ? (
                           item.scheduleMode === "custom" ? (
                             <span className="flex items-center gap-1 flex-wrap">
-                              <Repeat size={10} />เฉพาะ {(item.months || []).map((m) => MONTH_ABBR_TH[m - 1]).join(", ")} วันที่ {parseLocalDate(item.date).getDate()}
+                              <Repeat size={10} />Only {(item.months || []).map((m) => MONTH_ABBR_TH[m - 1]).join(", ")} on day {parseLocalDate(item.date).getDate()}
                             </span>
                           ) : (
                             <span className="flex items-center gap-1">
-                              <Repeat size={10} />ทุก
+                              <Repeat size={10} />Every
                               <input type="number" min="1" max="12" defaultValue={item.intervalMonths || 1} key={item.id + "-freq"}
                                 onBlur={(e) => updateItem(item.id, { intervalMonths: Math.max(1, Math.min(12, parseInt(e.target.value) || 1)) })}
                                 style={{ width: 32, border: `1px solid ${C.graySoft}`, borderRadius: 6, padding: "0 2px", textAlign: "center", fontSize: 11 }} />
-                              เดือน วันที่ {parseLocalDate(item.date).getDate()}
+                              months on day {parseLocalDate(item.date).getDate()}
                             </span>
                           )
                         ) : <span>{thDate(item.date)}</span>}
@@ -2686,18 +2985,17 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
                     <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap">{st.text}</span>
                   </div>
                   <div className="flex items-center gap-2 ml-11">
-                    <div className="flex rounded-full overflow-hidden p-0.5" style={{ background: C.graySoft }}>
-                      <button onClick={() => updateItem(item.id, { mode: "percent" })} style={{ background: item.mode === "percent" ? C.purple : "transparent", color: item.mode === "percent" ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-xs font-bold">%</button>
-                      <button onClick={() => updateItem(item.id, { mode: "thb" })} style={{ background: item.mode === "thb" ? C.purple : "transparent", color: item.mode === "thb" ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-xs font-bold">฿</button>
-                    </div>
                     <input type="number" min="0" defaultValue={item.value} key={item.id + item.mode}
-                      onBlur={(e) => updateItem(item.id, { value: parseFloat(e.target.value) || 0 })} style={{ ...inputStyle, width: 90 }} />
+                      onBlur={(e) => updateItem(item.id, { value: parseFloat(e.target.value) || 0 })} style={{ ...inputStyle, width: 100 }} />
                     <span style={{ fontFamily: "'Prompt', sans-serif", color: C.purple }} className="text-sm font-bold flex-1 text-right">{fmtTHB(amt)}</span>
-                    <button onClick={() => markExecuted(item)} title="ทำเครื่องหมายว่าลงทุนแล้ว" style={{ color: item.executed ? C.teal : C.graySoft }}><CheckCircle2 size={20} /></button>
+                    {item.recurring && !item.executed && (
+                      <button onClick={() => skipItem(item)} title="Skip this cycle (no investment this month)" style={{ color: C.inkSoft }} className="p-1"><SkipForward size={16} /></button>
+                    )}
+                    <button onClick={() => startExecute(item)} title="Mark as invested" style={{ color: item.executed ? C.teal : C.graySoft }}><CheckCircle2 size={20} /></button>
                     <button onClick={() => removeItem(item.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={13} /></button>
                   </div>
                   {item.recurring && item.scheduleMode === "custom" && (
-                    <div className="flex flex-wrap gap-1 mt-2 ml-11">
+                    <div className="flex gap-1 mt-2 ml-11 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
                       {MONTH_ABBR_TH.map((label, i) => {
                         const m = i + 1;
                         const active = (item.months || []).includes(m);
@@ -2706,7 +3004,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
                             const nextMonths = active ? (item.months || []).filter((x) => x !== m) : [...(item.months || []), m].sort((a, b) => a - b);
                             if (nextMonths.length === 0) return;
                             updateItem(item.id, { months: nextMonths });
-                          }} style={{ background: active ? C.purple : C.graySoft, color: active ? "#fff" : C.inkSoft }} className="px-2 py-0.5 rounded-full text-[10px] font-bold">{label}</button>
+                          }} style={{ background: active ? C.purple : C.graySoft, color: active ? "#fff" : C.inkSoft }} className="px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0">{label}</button>
                         );
                       })}
                     </div>
@@ -2716,49 +3014,43 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
             })}
           </div>
         )}
-        <p className="text-[11px] mt-2 flex items-center gap-1.5" style={{ color: C.inkSoft }}><Info size={12} />กดติ๊กถูกเมื่อทำการลงทุนแล้ว ระบบจะบันทึกเข้าหน้ารายการออม-ลงทุนให้อัตโนมัติ ถ้าเป็นรายการรายเดือนจะเลื่อนกำหนดครั้งถัดไปให้เอง</p>
+        <p className="text-[11px] mt-2 flex items-center gap-1.5" style={{ color: C.inkSoft }}><Info size={12} />Check the box once you've invested — the system logs it into the Saving-Investing page automatically. Monthly items advance to the next due date on their own</p>
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เพิ่มรายการลงทุนใหม่</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Add new investment item</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-          <Field label="ชื่อรายการลงทุน"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น กองทุน SET50" style={inputStyle} /></Field>
-          <Field label="หมวดหมู่">
-            <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="เลือกหรือพิมพ์เอง" list="invest-cat-presets" style={inputStyle} />
+          <Field label="Investment item name"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. SET50 fund" style={inputStyle} /></Field>
+          <Field label="Category">
+            <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Select or type your own" list="invest-cat-presets" style={inputStyle} />
             <datalist id="invest-cat-presets">{INVEST_CATEGORY_PRESETS.map((c) => <option key={c} value={c} />)}</datalist>
           </Field>
         </div>
-        <Field label="สัดส่วนเงินลงทุน">
-          <div className="flex items-center gap-2">
-            <div className="flex rounded-full overflow-hidden p-0.5" style={{ background: C.graySoft }}>
-              <button onClick={() => setMode("percent")} style={{ background: mode === "percent" ? C.purple : "transparent", color: mode === "percent" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1"><Percent size={11} />เปอร์เซ็นต์</button>
-              <button onClick={() => setMode("thb")} style={{ background: mode === "thb" ? C.purple : "transparent", color: mode === "thb" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">บาท (฿)</button>
-            </div>
-            <input type="number" min="0" value={value} onChange={(e) => setValue(e.target.value)} placeholder={mode === "percent" ? "เช่น 20" : "เช่น 2000"} style={{ ...inputStyle, width: 120 }} />
-          </div>
+        <Field label="Investment amount (THB)">
+          <input type="number" min="0" value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. 2000" style={{ ...inputStyle, width: 160 }} />
         </Field>
         <div className="h-3" />
-        <Field label="กำหนดเวลาลงทุน">
+        <Field label="Investment schedule">
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex rounded-full overflow-hidden p-0.5" style={{ background: C.graySoft }}>
-              <button onClick={() => setScheduleType("monthly")} style={{ background: scheduleType === "monthly" ? C.purple : "transparent", color: scheduleType === "monthly" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1"><Repeat size={11} />ตามรอบ</button>
-              <button onClick={() => setScheduleType("once")} style={{ background: scheduleType === "once" ? C.purple : "transparent", color: scheduleType === "once" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">ครั้งเดียว</button>
+              <button onClick={() => setScheduleType("monthly")} style={{ background: scheduleType === "monthly" ? C.purple : "transparent", color: scheduleType === "monthly" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1"><Repeat size={11} />Recurring</button>
+              <button onClick={() => setScheduleType("once")} style={{ background: scheduleType === "once" ? C.purple : "transparent", color: scheduleType === "once" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">One-time</button>
             </div>
             {scheduleType === "monthly" && (
               <div className="flex rounded-full overflow-hidden p-0.5" style={{ background: C.graySoft }}>
-                <button onClick={() => setScheduleMode("interval")} style={{ background: scheduleMode === "interval" ? C.purple : "transparent", color: scheduleMode === "interval" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">ทุก N เดือน</button>
-                <button onClick={() => setScheduleMode("custom")} style={{ background: scheduleMode === "custom" ? C.purple : "transparent", color: scheduleMode === "custom" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">เลือกเดือนเอง</button>
+                <button onClick={() => setScheduleMode("interval")} style={{ background: scheduleMode === "interval" ? C.purple : "transparent", color: scheduleMode === "interval" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">Every N months</button>
+                <button onClick={() => setScheduleMode("custom")} style={{ background: scheduleMode === "custom" ? C.purple : "transparent", color: scheduleMode === "custom" ? "#fff" : C.inkSoft }} className="px-3 py-1.5 rounded-full text-xs font-bold">Custom months</button>
               </div>
             )}
             {scheduleType === "monthly" ? (
               scheduleMode === "interval" ? (
                 <div className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: C.inkSoft }}>
-                  วันที่ <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(Math.min(28, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 60 }} /> ของทุก
-                  <input type="number" min="1" max="12" value={intervalMonths} onChange={(e) => setIntervalMonths(Math.min(12, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 50 }} /> เดือน
+                  Day <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(Math.min(28, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 60 }} /> of every
+                  <input type="number" min="1" max="12" value={intervalMonths} onChange={(e) => setIntervalMonths(Math.min(12, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 50 }} /> month(s)
                 </div>
               ) : (
                 <div className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: C.inkSoft }}>
-                  วันที่ <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(Math.min(28, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 60 }} /> ของเดือนที่เลือก
+                  Day <input type="number" min="1" max="28" value={day} onChange={(e) => setDay(Math.min(28, Math.max(1, parseInt(e.target.value) || 1)))} style={{ ...inputStyle, width: 60 }} /> of selected month
                 </div>
               )
             ) : (
@@ -2774,18 +3066,18 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
             </div>
           )}
           {scheduleType === "monthly" && scheduleMode === "custom" && (
-            <div className="flex flex-wrap gap-1.5 mt-2">
+            <div className="flex gap-1.5 mt-2 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
               {MONTH_ABBR_TH.map((label, i) => {
                 const m = i + 1;
                 const active = customMonths.includes(m);
                 return (
-                  <button key={m} onClick={() => toggleCustomMonth(m)} style={{ background: active ? C.purple : C.graySoft, color: active ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold">{label}</button>
+                  <button key={m} onClick={() => toggleCustomMonth(m)} style={{ background: active ? C.purple : C.graySoft, color: active ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold shrink-0">{label}</button>
                 );
               })}
             </div>
           )}
         </Field>
-        <button onClick={addItem} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="mt-4 flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> เพิ่มรายการลงทุน</button>
+        <button onClick={addItem} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="mt-4 flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> Add investment item</button>
       </div>
       </>
       )}
@@ -2795,7 +3087,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
       )}
 
       {subView === "summary" && (
-        <InvestSummary savings={savings} />
+        <InvestSummary transactions={transactions} />
       )}
     </div>
   );
@@ -2805,6 +3097,21 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
 /*  Investment monthly planner — pick which item invests how much,   */
 /*  per specific month                                                */
 /* ---------------------------------------------------------------- */
+function isItemScheduledFor(item, targetYm) {
+  if (!item.recurring) return item.date.slice(0, 7) === targetYm; // one-time: only its own month
+  if (item.scheduleMode === "custom") {
+    const [, tm] = targetYm.split("-").map(Number);
+    return (item.months || []).includes(tm);
+  }
+  // Interval mode: item.date is one real occurrence in the sequence (it
+  // advances every time the item is executed/skipped), so any target month
+  // an exact multiple of intervalMonths away from it is also a real
+  // occurrence — this holds regardless of which occurrence we compare
+  // against, forward or backward.
+  const n = item.intervalMonths || 1;
+  const diff = monthsBetweenYm(item.date.slice(0, 7), targetYm);
+  return ((diff % n) + n) % n === 0;
+}
 function InvestMonthlyPlanner({ investPlan, setInvestPlan }) {
   const { totalPool, items, overrides } = investPlan;
   const [ym, setYm] = useState(ymOf(new Date()));
@@ -2824,7 +3131,7 @@ function InvestMonthlyPlanner({ investPlan, setInvestPlan }) {
     });
   }
 
-  const rows = items.map((item) => ({ item, amt: investItemAmount(item, totalPool, ym, overrides), overridden: overrides?.[ym]?.[item.id] !== undefined }));
+  const rows = items.filter((item) => isItemScheduledFor(item, ym)).map((item) => ({ item, amt: investItemAmount(item, totalPool, ym, overrides), overridden: overrides?.[ym]?.[item.id] !== undefined }));
   const monthTotal = rows.reduce((a, r) => a + r.amt, 0);
 
   return (
@@ -2836,13 +3143,13 @@ function InvestMonthlyPlanner({ investPlan, setInvestPlan }) {
       </div>
 
       <div style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})` }} className="rounded-3xl p-5 text-white shadow-sm">
-        <p className="text-xs font-semibold opacity-90 mb-1">แผนลงทุนรวมเดือนนี้</p>
+        <p className="text-xs font-semibold opacity-90 mb-1">Total investment plan this month</p>
         <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(monthTotal)}</p>
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">กำหนดยอดแต่ละรายการสำหรับเดือนนี้</p>
-        {rows.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุน — ไปเพิ่มที่แท็บ 'รายการ' ก่อน" /> : (
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Set each item's amount for this month</p>
+        {rows.length === 0 ? <EmptyNote text={items.length === 0 ? "No investment items yet — add one on the 'Items' tab first" : "No items scheduled for this month"} /> : (
           <div className="flex flex-col gap-2">
             {rows.map(({ item, amt, overridden }) => (
               <div key={item.id} style={{ background: C.bg }} className="flex items-center gap-2.5 px-3.5 py-3 rounded-2xl">
@@ -2850,19 +3157,19 @@ function InvestMonthlyPlanner({ investPlan, setInvestPlan }) {
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-bold truncate">{item.name}</p>
                   <p className="text-[11px] flex items-center gap-1" style={{ color: C.inkSoft }}>
-                    <Tag size={10} />{item.category}{overridden && <span style={{ color: C.purple }} className="font-bold">· กำหนดเฉพาะเดือนนี้</span>}
+                    <Tag size={10} />{item.category}{overridden && <span style={{ color: C.purple }} className="font-bold">· set this month only</span>}
                   </p>
                 </div>
                 <input type="number" min="0" defaultValue={amt} key={ym + item.id + amt}
                   onBlur={(e) => setOverride(item.id, e.target.value)} style={{ ...inputStyle, width: 100 }} />
                 {overridden && (
-                  <button onClick={() => resetOverride(item.id)} title="รีเซ็ตเป็นค่าเริ่มต้น" style={{ color: C.inkSoft }} className="p-1"><RotateCcw size={13} /></button>
+                  <button onClick={() => resetOverride(item.id)} title="Reset to default" style={{ color: C.inkSoft }} className="p-1"><RotateCcw size={13} /></button>
                 )}
               </div>
             ))}
           </div>
         )}
-        <p className="text-[11px] mt-3" style={{ color: C.inkSoft }}>ปรับยอดของแต่ละรายการเฉพาะเดือนนี้ได้อิสระ (บางเดือนจะไม่ลงบางตัว ก็ใส่ 0 ได้) ยอดนี้จะถูกใช้ตอนกดติ๊กว่า "ลงทุนแล้ว" ที่แท็บ "รายการ" เมื่อถึงกำหนดของเดือนนี้</p>
+        <p className="text-[11px] mt-3" style={{ color: C.inkSoft }}>Freely adjust each item's amount for this month only (some months you might skip one — just enter 0). This amount is used when you check "Invested" on the "Items" tab once this month is due</p>
       </div>
     </div>
   );
@@ -2871,10 +3178,13 @@ function InvestMonthlyPlanner({ investPlan, setInvestPlan }) {
 /* ---------------------------------------------------------------- */
 /*  Investment summary — actual invested amounts by month / by year  */
 /* ---------------------------------------------------------------- */
-function InvestSummary({ savings }) {
+function InvestSummary({ transactions }) {
   const [mode, setMode] = useState("monthly");
   const [year, setYear] = useState(new Date().getFullYear());
-  const invested = useMemo(() => savings.filter((s) => s.kind === "investment"), [savings]);
+  // "Actual invested" should reflect real, confirmed transactions — not a
+  // separately-tracked log that could drift out of sync (e.g. if someone
+  // edits/deletes the underlying transaction later).
+  const invested = useMemo(() => transactions.filter((t) => t.type === "expense" && t.category === "investment"), [transactions]);
 
   const monthlyData = useMemo(() => {
     const totals = Array(12).fill(0);
@@ -2889,31 +3199,31 @@ function InvestSummary({ savings }) {
   const yearlyData = useMemo(() => {
     const totals = {};
     invested.forEach((s) => { const y = s.date.slice(0, 4); totals[y] = (totals[y] || 0) + Number(s.amount); });
-    return Object.entries(totals).sort(([a], [b]) => a.localeCompare(b)).map(([y, v]) => ({ label: String(Number(y) + 543), value: v }));
+    return Object.entries(totals).sort(([a], [b]) => a.localeCompare(b)).map(([y, v]) => ({ label: String(Number(y)), value: v }));
   }, [invested]);
   const allTimeTotal = yearlyData.reduce((a, y) => a + y.value, 0);
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex rounded-full overflow-hidden p-1 w-fit" style={{ background: C.graySoft }}>
-        <button onClick={() => setMode("monthly")} style={{ background: mode === "monthly" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full shadow-sm">รายเดือน</button>
-        <button onClick={() => setMode("yearly")} style={{ background: mode === "yearly" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full">รายปี</button>
+        <button onClick={() => setMode("monthly")} style={{ background: mode === "monthly" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full shadow-sm">Monthly</button>
+        <button onClick={() => setMode("yearly")} style={{ background: mode === "yearly" ? C.card : "transparent" }} className="px-4 py-1.5 text-sm font-bold rounded-full">Yearly</button>
       </div>
 
       {mode === "monthly" ? (
         <>
           <div className="flex items-center justify-between">
             <button onClick={() => setYear((y) => y - 1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronLeft size={16} /></button>
-            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">ปี {year + 543}</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">Year {year}</p>
             <button onClick={() => setYear((y) => y + 1)} style={{ background: C.card, border: `1px solid ${C.graySoft}` }} className="p-2 rounded-full"><ChevronRight size={16} /></button>
           </div>
           <div style={{ background: `linear-gradient(135deg, ${C.teal}, #22A184)` }} className="rounded-3xl p-5 text-white shadow-sm">
-            <p className="text-xs font-semibold opacity-90 mb-1">รวมเงินลงทุนจริงปีนี้</p>
+            <p className="text-xs font-semibold opacity-90 mb-1">Total actual investment this year</p>
             <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(yearTotal)}</p>
           </div>
           <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแต่ละเดือน</p>
-            {yearTotal === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุนจริงในปีนี้" /> : (
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Actual investment by month</p>
+            {yearTotal === 0 ? <EmptyNote text="No actual investments this year" /> : (
               <div style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
                   <BarChart data={monthlyData}>
@@ -2931,12 +3241,12 @@ function InvestSummary({ savings }) {
       ) : (
         <>
           <div style={{ background: `linear-gradient(135deg, ${C.blue}, #2E93C4)` }} className="rounded-3xl p-5 text-white shadow-sm">
-            <p className="text-xs font-semibold opacity-90 mb-1">รวมเงินลงทุนจริงทั้งหมด</p>
+            <p className="text-xs font-semibold opacity-90 mb-1">Total actual investment</p>
             <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold">{fmtTHB(allTimeTotal)}</p>
           </div>
           <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">ยอดลงทุนจริงแยกตามปี</p>
-            {yearlyData.length === 0 ? <EmptyNote text="ยังไม่มีรายการลงทุนจริง" /> : (
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Actual investment by year</p>
+            {yearlyData.length === 0 ? <EmptyNote text="No actual investments yet" /> : (
               <div style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
                   <BarChart data={yearlyData}>
@@ -2952,7 +3262,7 @@ function InvestSummary({ savings }) {
           </div>
         </>
       )}
-      <p className="text-[11px] px-1" style={{ color: C.inkSoft }}>ยอดสรุปนี้คำนวณจากรายการที่กดติ๊ก "ลงทุนแล้ว" จริง (บันทึกอยู่ในหน้า "รายการออม-ลงทุน") ไม่ใช่ยอดที่วางแผนไว้เฉยๆ</p>
+      <p className="text-[11px] px-1" style={{ color: C.inkSoft }}>This summary is calculated from items actually checked "Invested" (logged on the "Saving-Investing" page) — not just what was planned</p>
     </div>
   );
 }
@@ -2971,14 +3281,14 @@ function PortfolioHoldingsPanel({ holdings, setHoldings, setDeletedHoldingIds, s
     const inv = parseFloat(invested);
     if (!inv || inv <= 0 || !name.trim()) return;
     const cur = current !== "" ? parseFloat(current) : inv;
-    setHoldings((prev) => [{ id: uid(), name: name.trim(), category: category.trim() || "อื่นๆ", invested: inv, current: cur, date }, ...prev]);
+    setHoldings((prev) => [{ id: uid(), name: name.trim(), category: category.trim() || "Other", invested: inv, current: cur, date }, ...prev]);
     setName(""); setCategory(""); setInvested(""); setCurrent("");
-    showToast("บันทึกรายการสำเร็จ ✓");
+    showToast("Saved successfully ✓");
   }
   function remove(id) {
     setHoldings((prev) => prev.filter((h) => h.id !== id));
     setDeletedHoldingIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
-    showToast("ลบรายการสำเร็จ ✓");
+    showToast("Deleted successfully ✓");
   }
   function updateCurrent(id, val) {
     const v = parseFloat(val);
@@ -2997,13 +3307,11 @@ function PortfolioHoldingsPanel({ holdings, setHoldings, setDeletedHoldingIds, s
   return (
     <div className="flex flex-col gap-4">
       <div style={{ background: `linear-gradient(135deg, ${gainColor}, ${totalGain >= 0 ? "#22A184" : "#D6472C"})` }} className="rounded-3xl p-5 text-white shadow-sm">
-        <p className="text-xs font-semibold opacity-90 mb-1">มูลค่าปัจจุบันของพอร์ต</p>
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(totalCurrent)}</p>
         <div className="grid grid-cols-3 gap-2 text-xs">
-          <SummaryMini label="เงินลงทุนทั้งหมด" value={totalInvested} />
-          <SummaryMini label="กำไร/ขาดทุน" value={totalGain} />
+          <SummaryMini label="Total Invested" value={totalInvested} />
+          <SummaryMini label="Profit/Loss" value={totalGain} />
           <div style={{ background: "rgba(255,255,255,0.18)" }} className="rounded-xl px-3 py-2">
-            <p className="opacity-90 font-semibold">ผลตอบแทน</p>
+            <p className="opacity-90 font-semibold">Return</p>
             <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-sm flex items-center gap-1">
               {totalGain >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}{totalGainPct >= 0 ? "+" : ""}{totalGainPct.toFixed(1)}%
             </p>
@@ -3013,7 +3321,7 @@ function PortfolioHoldingsPanel({ holdings, setHoldings, setDeletedHoldingIds, s
 
       {pieData.length > 0 && (
         <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">สัดส่วนมูลค่าปัจจุบันตามรายการ</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Current value breakdown by item</p>
           <div className="flex flex-col sm:flex-row items-center gap-4">
             <div style={{ width: "100%", maxWidth: 200, height: 190 }}>
               <ResponsiveContainer>
@@ -3038,8 +3346,8 @@ function PortfolioHoldingsPanel({ holdings, setHoldings, setDeletedHoldingIds, s
       )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">รายการที่ลงทุนอยู่ตอนนี้</p>
-        {holdings.length === 0 ? <EmptyNote text="ยังไม่มีรายการ — เพิ่มรายการลงทุนที่มีอยู่แล้วด้านล่าง" /> : (
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Currently invested items</p>
+        {holdings.length === 0 ? <EmptyNote text="No items yet — add an existing investment below" /> : (
           <div className="flex flex-col gap-2">
             {holdings.map((h) => {
               const gain = h.current - h.invested;
@@ -3053,19 +3361,21 @@ function PortfolioHoldingsPanel({ holdings, setHoldings, setDeletedHoldingIds, s
                       <p className="text-sm font-bold truncate">{h.name}</p>
                       <p className="text-[11px] flex items-center gap-1" style={{ color: C.inkSoft }}><Tag size={10} />{h.category}</p>
                     </div>
-                    <span style={{ background: color === C.teal ? C.tealSoft : color === C.coral ? C.coralSoft : C.graySoft, color }} className="text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap flex items-center gap-1">
+                    <span style={{ background: color === C.teal ? C.tealSoft : color === C.coral ? C.coralSoft : C.graySoft, color }} className="text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap flex items-center gap-1.5 shrink-0">
                       {gain !== 0 && (gain > 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />)}
                       {gainPct >= 0 ? "+" : ""}{gainPct.toFixed(1)}%
+                      <span style={{ opacity: 0.7 }}>·</span>
+                      {gain >= 0 ? "+" : ""}{fmtTHB(gain)}
                     </span>
                   </div>
-                  <div className="flex items-center gap-3 ml-11 text-xs" style={{ color: C.inkSoft }}>
-                    <span>ลงทุน: <b style={{ color: C.ink, fontFamily: "'Prompt', sans-serif" }}>{fmtTHB(h.invested)}</b></span>
-                    <span className="flex items-center gap-1">มูลค่าปัจจุบัน:
+                  <div className="flex items-center gap-3 ml-11 text-xs flex-nowrap overflow-x-auto" style={{ color: C.inkSoft, scrollbarWidth: "none" }}>
+                    <span className="whitespace-nowrap shrink-0">Invested: <b style={{ color: C.ink, fontFamily: "'Prompt', sans-serif" }}>{fmtTHB(h.invested)}</b></span>
+                    <span className="flex items-center gap-1 shrink-0">
+                      <span className="whitespace-nowrap">Current value:</span>
                       <input type="number" min="0" defaultValue={h.current} key={h.id + h.current}
                         onBlur={(e) => updateCurrent(h.id, e.target.value)} style={{ ...inputStyle, width: 90, padding: "4px 8px" }} />
                     </span>
-                    <span style={{ color }} className="font-bold ml-auto">{gain >= 0 ? "+" : ""}{fmtTHB(gain)}</span>
-                    <button onClick={() => remove(h.id)} style={{ color: C.gray }} className="p-1"><Trash2 size={13} /></button>
+                    <button onClick={() => remove(h.id)} style={{ color: C.gray }} className="p-1 ml-auto shrink-0"><Trash2 size={13} /></button>
                   </div>
                 </div>
               );
@@ -3075,18 +3385,18 @@ function PortfolioHoldingsPanel({ holdings, setHoldings, setDeletedHoldingIds, s
       </div>
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">เพิ่มรายการลงทุนที่มีอยู่แล้ว</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Add an existing investment</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-          <Field label="ชื่อรายการ"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น หุ้น PTT" style={inputStyle} /></Field>
-          <Field label="หมวดหมู่">
-            <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="เลือกหรือพิมพ์เอง" list="holding-cat-presets" style={inputStyle} />
+          <Field label="Item name"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. PTT stock" style={inputStyle} /></Field>
+          <Field label="Category">
+            <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Select or type your own" list="holding-cat-presets" style={inputStyle} />
             <datalist id="holding-cat-presets">{INVEST_CATEGORY_PRESETS.map((c) => <option key={c} value={c} />)}</datalist>
           </Field>
-          <Field label="เงินลงทุน (ต้นทุน)"><input type="number" min="0" value={invested} onChange={(e) => setInvested(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
-          <Field label="มูลค่าปัจจุบัน (ไม่ระบุ = เท่าต้นทุน)"><input type="number" min="0" value={current} onChange={(e) => setCurrent(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+          <Field label="Investment (cost)"><input type="number" min="0" value={invested} onChange={(e) => setInvested(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+          <Field label="Current value (blank = same as cost)"><input type="number" min="0" value={current} onChange={(e) => setCurrent(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
         </div>
-        <button onClick={add} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> เพิ่มรายการ</button>
-        <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>ใช้สำหรับบันทึกรายการลงทุนที่มีอยู่แล้วก่อนเริ่มใช้แอป แล้วอัปเดต "มูลค่าปัจจุบัน" เป็นระยะเพื่อดูผลตอบแทน — แยกจากยอดในแท็บ "รายการออม-ลงทุน" และ "แผนพอร์ตการลงทุน"</p>
+        <button onClick={add} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> Add item</button>
+        <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>Use this to log investments you already held before using the app, then update the "current value" periodically to track returns — separate from the totals on the "Saving-Investing" and "Investment Plan" tabs</p>
       </div>
     </div>
   );
@@ -3128,9 +3438,9 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
   const syncedInFixCost = planFixCostItems.some((i) => i.id === HOME_LOAN_FIXCOST_ID);
 
   function syncNow() {
-    const itemName = homeLoan.name || "ผ่อนบ้าน";
+    const itemName = homeLoan.name || "Home Loan";
     const item = {
-      id: HOME_LOAN_FIXCOST_ID, name: itemName, type: "ค่าเช่า/ผ่อนบ้าน",
+      id: HOME_LOAN_FIXCOST_ID, name: itemName, type: "Rent/Home Loan",
       amount: homeLoan.payment, recurring: true, startMonth: homeLoan.startMonth, endMonth: payoffYm, auto: true,
     };
     setPlanFixCostItems((prev) => {
@@ -3148,7 +3458,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
     const p = parseFloat(principal), pay = parseFloat(payment), rate = parseFloat(initialRate);
     if (!p || p <= 0 || !pay || pay <= 0 || isNaN(rate)) return;
     setHomeLoan((prev) => ({
-      active: true, name: name.trim() || "ผ่อนบ้าน", principal: p, startMonth, payment: pay,
+      active: true, name: name.trim() || "Home Loan", principal: p, startMonth, payment: pay,
       dueDay: Math.min(31, Math.max(1, parseInt(dueDay) || 5)),
       rateChanges: prev.active && prev.rateChanges?.length ? prev.rateChanges : [{ ym: startMonth, rate }],
       paidMonths: prev.paidMonths || {},
@@ -3169,11 +3479,11 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
     if (isNaN(r) || r < 0) return;
     setHomeLoan((p) => ({ ...p, rateChanges: [...(p.rateChanges || []), { ym: newRateMonth, rate: r }] }));
     setNewRate("");
-    showToast("บันทึกรายการสำเร็จ ✓");
+    showToast("Saved successfully ✓");
   }
   function removeRateChange(idx) {
     setHomeLoan((p) => ({ ...p, rateChanges: p.rateChanges.filter((_, i) => i !== idx) }));
-    showToast("ลบรายการสำเร็จ ✓");
+    showToast("Deleted successfully ✓");
   }
   function togglePaid(ym) {
     setHomeLoan((p) => {
@@ -3192,20 +3502,20 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
     return (
       <div className="flex flex-col gap-4">
         <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3 flex items-center gap-2"><Home size={16} color={C.brown} />ตั้งค่าเงินกู้บ้าน</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3 flex items-center gap-2"><Home size={16} color={C.brown} />Set up home loan</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-            <Field label="ชื่อรายการ"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น สินเชื่อบ้าน ธ.กรุงศรี" style={inputStyle} /></Field>
-            <Field label="เงินต้นเริ่มต้น (บาท)"><input type="number" min="0" value={principal} onChange={(e) => setPrincipal(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
-            <Field label="เดือนที่เริ่มผ่อน"><input type="month" value={startMonth} onChange={(e) => setStartMonth(e.target.value)} style={inputStyle} /></Field>
-            <Field label="ยอดผ่อนต่อเดือน (บาท)"><input type="number" min="0" value={payment} onChange={(e) => setPayment(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
-            <Field label="วันครบกำหนดชำระ"><input type="number" min="1" max="31" value={dueDay} onChange={(e) => setDueDay(e.target.value)} style={inputStyle} /></Field>
-            <Field label="อัตราดอกเบี้ยเริ่มต้น (% ต่อปี)"><input type="number" min="0" step="0.01" value={initialRate} onChange={(e) => setInitialRate(e.target.value)} placeholder="เช่น 6.5" style={inputStyle} /></Field>
+            <Field label="Item name"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Krungsri home loan" style={inputStyle} /></Field>
+            <Field label="Starting principal (THB)"><input type="number" min="0" value={principal} onChange={(e) => setPrincipal(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+            <Field label="Month payments start"><input type="month" value={startMonth} onChange={(e) => setStartMonth(e.target.value)} style={inputStyle} /></Field>
+            <Field label="Monthly payment (THB)"><input type="number" min="0" value={payment} onChange={(e) => setPayment(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+            <Field label="Due date"><input type="number" min="1" max="31" value={dueDay} onChange={(e) => setDueDay(e.target.value)} style={inputStyle} /></Field>
+            <Field label="Starting interest rate (% p.a.)"><input type="number" min="0" step="0.01" value={initialRate} onChange={(e) => setInitialRate(e.target.value)} placeholder="e.g. 6.5" style={inputStyle} /></Field>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={save} style={{ background: `linear-gradient(135deg, ${C.brown}, #A85F2C)`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> บันทึกข้อมูลเงินกู้</button>
-            {homeLoan.active && <button onClick={() => setEditing(false)} style={{ background: C.graySoft, color: C.inkSoft }} className="px-4 py-2.5 rounded-full text-sm font-bold">ยกเลิก</button>}
+            <button onClick={save} style={{ background: `linear-gradient(135deg, ${C.brown}, #A85F2C)`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> Save loan info</button>
+            {homeLoan.active && <button onClick={() => setEditing(false)} style={{ background: C.graySoft, color: C.inkSoft }} className="px-4 py-2.5 rounded-full text-sm font-bold">Cancel</button>}
           </div>
-          <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>ระบบจะคำนวณตารางผ่อนชำระ (ดอกเบี้ย/เงินต้น/เงินต้นคงเหลือ) และซิงก์ยอดผ่อนเข้ารายการ Fix Cost ในหน้า "แผนรายเดือน" ให้อัตโนมัติ</p>
+          <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>The system calculates the payment schedule (interest/principal/remaining principal) and syncs the payment into the Fix Cost item on the "Monthly Plan" page automatically</p>
         </div>
       </div>
     );
@@ -3225,52 +3535,43 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
         </div>
       </div>
 
-      <div style={{ background: syncedInFixCost ? C.tealSoft : C.coralSoft }} className="rounded-2xl px-4 py-3 flex items-center gap-3 flex-wrap">
-        <span style={{ color: syncedInFixCost ? C.teal : C.coral }} className="text-sm font-semibold flex-1">
-          {syncedInFixCost ? "✅ ซิงก์เข้ารายการ Fix Cost แล้ว" : "⚠️ ยังไม่พบในรายการ Fix Cost"}
-        </span>
-        <button onClick={syncNow} style={{ background: syncedInFixCost ? C.teal : C.coral, color: "#fff" }} className="px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap">
-          {justSynced ? "ซิงก์แล้ว ✓" : "ซิงก์ตอนนี้"}
-        </button>
-      </div>
-
       <div style={{ background: `linear-gradient(135deg, ${C.brown}, #A85F2C)` }} className="rounded-3xl p-5 text-white shadow-sm">
-        <p className="text-xs font-semibold opacity-90 mb-1">{paidOff ? "ผ่อนหมดแล้ว 🎉" : "เงินต้นคงเหลือตอนนี้"}</p>
+        <p className="text-xs font-semibold opacity-90 mb-1">{paidOff ? "Fully paid off 🎉" : "Principal remaining now"}</p>
         <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-3xl font-extrabold mb-3">{fmtTHB(currentRemaining)}</p>
         {isOverdue && (
           <div style={{ background: "rgba(255,255,255,0.22)" }} className="rounded-xl px-3 py-2 mb-3 text-xs font-bold flex items-center gap-1.5">
-            <span>⚠️</span><span>ค้างชำระตั้งแต่งวด {monthLabel(unpaidSinceYm)} — ยังไม่ได้กดติ๊กจ่ายในหน้า "หนี้สิน" ตารางนี้จะค้างรออยู่ที่งวดนี้จนกว่าจะกดจ่าย</span>
+            <span>⚠️</span><span>Overdue since {monthLabel(unpaidSinceYm)} — not yet marked paid on the "Debts" page. This table will stay on this month until you mark it paid</span>
           </div>
         )}
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <SummaryMini label="งวดที่เหลือ" value={remainingInstallments} sub="งวด" isText />
+          <SummaryMini label="Installments left" value={remainingInstallments} sub="installment" isText />
           <div style={{ background: "rgba(255,255,255,0.18)" }} className="rounded-xl px-3 py-2">
-            <p className="opacity-90 font-semibold">คาดว่าจะปิดยอด</p>
+            <p className="opacity-90 font-semibold">Expected payoff</p>
             <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-sm">{payoffYm ? monthLabel(payoffYm) : "-"}</p>
           </div>
-          <SummaryMini label="ดอกเบี้ยจ่ายไปแล้ว (ประมาณ)" value={interestPaidSoFar} />
-          <SummaryMini label="ดอกเบี้ยที่เหลือ (ประมาณ)" value={interestRemaining} />
+          <SummaryMini label="Interest paid so far (est.)" value={interestPaidSoFar} />
+          <SummaryMini label="Interest remaining (est.)" value={interestRemaining} />
         </div>
       </div>
 
       {hitCap && (
         <div style={{ background: C.coralSoft, color: C.coral }} className="rounded-2xl px-4 py-3 text-sm font-semibold flex items-start gap-2">
           <AlertTriangle size={16} className="shrink-0 mt-0.5" />
-          <span>ยอดผ่อนต่อเดือนอาจไม่พอชำระดอกเบี้ยทั้งหมด ระบบคำนวณไม่พบวันปิดยอดภายใน 50 ปี ลองเพิ่มยอดผ่อนต่อเดือนดู</span>
+          <span>The monthly payment may not cover all the interest — the system couldn't find a payoff date within 50 years. Try increasing the monthly payment</span>
         </div>
       )}
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
-        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">อัตราดอกเบี้ย</p>
+        <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">Interest rate</p>
         <div className="flex items-center gap-2 mb-3">
           <div style={{ background: C.brownSoft }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><Percent size={15} color={C.brown} /></div>
-          <p className="text-sm font-bold">ปัจจุบัน {currentRate}% ต่อปี</p>
+          <p className="text-sm font-bold">Currently {currentRate}% p.a.</p>
         </div>
         {homeLoan.rateChanges?.length > 0 && (
           <div className="flex flex-col gap-1.5 mb-3">
             {[...homeLoan.rateChanges].sort((a, b) => a.ym.localeCompare(b.ym)).map((rc, i) => (
               <div key={i} className="flex items-center gap-2 text-xs" style={{ color: C.inkSoft }}>
-                <span className="flex-1">ตั้งแต่ {monthLabel(rc.ym)}</span>
+                <span className="flex-1">From {monthLabel(rc.ym)}</span>
                 <span style={{ fontFamily: "'Prompt', sans-serif", color: C.ink }} className="font-bold">{rc.rate}%</span>
                 <button onClick={() => removeRateChange(homeLoan.rateChanges.indexOf(rc))} style={{ color: C.gray }} className="p-1"><Trash2 size={12} /></button>
               </div>
@@ -3279,11 +3580,11 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
         )}
         <div className="flex flex-wrap items-end gap-2">
           <div>
-            <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>อัตราดอกเบี้ยใหม่ (%)</label>
-            <input type="number" min="0" step="0.01" value={newRate} onChange={(e) => setNewRate(e.target.value)} placeholder="เช่น 7.2" style={{ ...inputStyle, width: 110 }} />
+            <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>New interest rate (%)</label>
+            <input type="number" min="0" step="0.01" value={newRate} onChange={(e) => setNewRate(e.target.value)} placeholder="e.g. 7.2" style={{ ...inputStyle, width: 110 }} />
           </div>
           <div>
-            <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>มีผลตั้งแต่เดือน</label>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>Effective from month</label>
             <input type="month" value={newRateMonth} onChange={(e) => setNewRateMonth(e.target.value)} style={{ ...inputStyle, width: 150 }} />
           </div>
           <button onClick={addRateChange} style={{ background: C.brown, color: "#fff" }} className="p-2.5 rounded-full"><Plus size={16} /></button>
@@ -3292,28 +3593,28 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
 
       <div style={{ background: C.card }} className="rounded-3xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">ตารางผ่อนชำระ</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">Payment schedule</p>
           <div className="flex items-center gap-2">
             <button onClick={() => setViewYear((y) => y - 1)} style={{ background: C.graySoft, color: C.inkSoft }} className="p-1.5 rounded-full"><ChevronLeft size={14} /></button>
-            <span style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold whitespace-nowrap">ปี {viewYear + 543}</span>
+            <span style={{ fontFamily: "'Prompt', sans-serif" }} className="text-sm font-bold whitespace-nowrap">Year {viewYear}</span>
             <button onClick={() => setViewYear((y) => y + 1)} style={{ background: C.graySoft, color: C.inkSoft }} className="p-1.5 rounded-full"><ChevronRight size={14} /></button>
-            <button onClick={() => setViewYear(new Date().getFullYear())} style={{ background: C.brownSoft, color: C.brown }} className="px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap">ปีนี้</button>
+            <button onClick={() => setViewYear(new Date().getFullYear())} style={{ background: C.brownSoft, color: C.brown }} className="px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap">This year</button>
           </div>
         </div>
         {yearRows.length === 0 ? (
-          <EmptyNote text={viewYear < minYear ? "ยังไม่เริ่มผ่อนในปีนี้" : viewYear > maxYear ? "ผ่อนหมดก่อนถึงปีนี้แล้ว" : "ไม่มีรายการในปีนี้"} />
+          <EmptyNote text={viewYear < minYear ? "Payments haven't started this year" : viewYear > maxYear ? "Fully paid off before this year" : "No items this year"} />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ color: C.inkSoft }}>
-                  <th className="text-center font-bold pb-2 pr-1">จ่ายแล้ว</th>
-                  <th className="text-left font-bold pb-2 pr-2">เดือน</th>
-                  <th className="text-right font-bold pb-2 px-2">ยอดผ่อนจริง</th>
-                  <th className="text-right font-bold pb-2 px-2">ดอกเบี้ย</th>
-                  <th className="text-right font-bold pb-2 px-2">ดอกเบี้ยที่จ่าย</th>
-                  <th className="text-right font-bold pb-2 px-2">เงินต้นที่ลด</th>
-                  <th className="text-right font-bold pb-2 pl-2">เงินต้นเหลือ</th>
+                  <th className="text-center font-bold pb-2 pr-1">Paid</th>
+                  <th className="text-left font-bold pb-2 pr-2">Month</th>
+                  <th className="text-right font-bold pb-2 px-2">Actual Payment</th>
+                  <th className="text-right font-bold pb-2 px-2">Interest</th>
+                  <th className="text-right font-bold pb-2 px-2">Interest paid</th>
+                  <th className="text-right font-bold pb-2 px-2">Principal reduced</th>
+                  <th className="text-right font-bold pb-2 pl-2">Principal left</th>
                 </tr>
               </thead>
               <tbody>
@@ -3342,7 +3643,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
             </table>
           </div>
         )}
-        <p className="text-[11px] mt-3" style={{ color: C.inkSoft }}>ติ๊กถูก "จ่ายแล้ว" เพื่อเช็คลิสต์เดือนที่ชำระ และแก้ "ยอดผ่อนจริง" ได้ตรงๆ ในตาราง (เช่นเดือนไหนโปะเพิ่ม) ตารางทั้งหมดจะคำนวณเงินต้น/ดอกเบี้ยใหม่ให้ทันที ค่านี้ผูกกับรายการ Fix Cost ในหน้า "แผนรายเดือน" ด้วย</p>
+        <p className="text-[11px] mt-3" style={{ color: C.inkSoft }}>Check "Paid" to tick off months you've paid, and edit the "actual payment" directly in the table (e.g. an extra payment some month) — the whole table recalculates principal/interest instantly. This is also tied to the Fix Cost item on the "Monthly Plan" page</p>
       </div>
     </div>
   );
@@ -3439,13 +3740,13 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
     if (form.mode === "newCat") {
       const key = "cat_" + uid();
       setExpenseCategories((prev) => [...prev, { key, label: form.name.trim(), icon: form.icon, color: form.color, subcategories: [] }]);
-      showToast("บันทึกรายการสำเร็จ ✓");
+      showToast("Saved successfully ✓");
     } else if (form.mode === "editCat") {
       setExpenseCategories((prev) => prev.map((c) => (c.key === form.catKey ? { ...c, label: form.name.trim(), icon: form.icon, color: form.color } : c)));
     } else if (form.mode === "newSub") {
       const key = "sub_" + uid();
       setExpenseCategories((prev) => prev.map((c) => (c.key === form.catKey ? { ...c, subcategories: [...(c.subcategories || []), { key, label: form.name.trim(), icon: form.icon, color: form.color }] } : c)));
-      showToast("บันทึกรายการสำเร็จ ✓");
+      showToast("Saved successfully ✓");
     } else if (form.mode === "editSub") {
       setExpenseCategories((prev) => prev.map((c) => (c.key === form.catKey ? { ...c, subcategories: (c.subcategories || []).map((s) => (s.key === form.subKey ? { ...s, label: form.name.trim(), icon: form.icon, color: form.color } : s)) } : c)));
     } else if (form.mode === "newCard") {
@@ -3454,7 +3755,7 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
         setCreditCards((prev) => [...prev, { name: nm, icon: form.icon, color: form.color }]);
         setCardSettings((prev) => ({ ...prev, [nm]: { cutoffDay: form.cutoffDay, dueDay: form.dueDay } }));
         setDeletedCardNames((prev) => prev.filter((n) => n !== nm));
-        showToast("บันทึกรายการสำเร็จ ✓");
+        showToast("Saved successfully ✓");
       }
     } else if (form.mode === "editCard") {
       const nm = form.name.trim();
@@ -3485,7 +3786,7 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
       if (!banks.some((b) => b.name === nm)) {
         setBanks((prev) => [...prev, { name: nm, icon: form.icon, color: form.color }]);
         setDeletedBankNames((prev) => prev.filter((n) => n !== nm));
-        showToast("บันทึกรายการสำเร็จ ✓");
+        showToast("Saved successfully ✓");
       }
     } else if (form.mode === "editBank") {
       const nm = form.name.trim();
@@ -3502,39 +3803,39 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
     if (expenseCategories.length <= 1) return;
     setExpenseCategories((prev) => prev.filter((c) => c.key !== key));
     setDeletedCategoryKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
-    showToast("ลบรายการสำเร็จ ✓");
+    showToast("Deleted successfully ✓");
   }
   function deleteSub(catKey, subKey) {
     setExpenseCategories((prev) => prev.map((c) => (c.key === catKey ? { ...c, subcategories: (c.subcategories || []).filter((s) => s.key !== subKey) } : c)));
-    showToast("ลบรายการสำเร็จ ✓");
+    showToast("Deleted successfully ✓");
   }
   function deleteBank(name) {
     setBanks((prev) => prev.filter((b) => b.name !== name));
     setBankBalances((prev) => { const next = { ...prev }; delete next[name]; return next; });
     setDeletedBankNames((prev) => (prev.includes(name) ? prev : [...prev, name]));
-    showToast("ลบรายการสำเร็จ ✓");
+    showToast("Deleted successfully ✓");
   }
   function deleteCard(name) {
     if (creditCards.length <= 1) return;
     setCreditCards((prev) => prev.filter((c) => c.name !== name));
     setCardSettings((prev) => { const next = { ...prev }; delete next[name]; return next; });
     setDeletedCardNames((prev) => (prev.includes(name) ? prev : [...prev, name]));
-    showToast("ลบรายการสำเร็จ ✓");
+    showToast("Deleted successfully ✓");
   }
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.5)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
       <div style={{ background: C.card, borderRadius: 24, padding: 24, maxWidth: 440, width: "100%", maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">ตั้งค่า</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold text-lg">Settings</p>
           <button onClick={onClose} style={{ color: C.inkSoft }} className="p-1"><X size={18} /></button>
         </div>
-        <p className="text-xs mb-4" style={{ color: C.inkSoft }}>หมวดหมู่และบัตรเครดิตที่ตั้งไว้นี้เป็นของบัญชีคุณเท่านั้น ไม่กระทบผู้ใช้คนอื่น</p>
+        <p className="text-xs mb-4" style={{ color: C.inkSoft }}>These categories and credit cards belong only to your account — other users aren't affected</p>
 
         <div className="flex rounded-full overflow-hidden p-1 mb-4 w-fit" style={{ background: C.graySoft }}>
-          <button onClick={() => setSection("categories")} style={{ background: section === "categories" ? C.purple : "transparent", color: section === "categories" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">หมวดหมู่</button>
-          <button onClick={() => setSection("cards")} style={{ background: section === "cards" ? C.purple : "transparent", color: section === "cards" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">บัตรเครดิต</button>
-          <button onClick={() => setSection("banks")} style={{ background: section === "banks" ? C.purple : "transparent", color: section === "banks" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">ธนาคาร</button>
+          <button onClick={() => setSection("categories")} style={{ background: section === "categories" ? C.purple : "transparent", color: section === "categories" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">Category</button>
+          <button onClick={() => setSection("cards")} style={{ background: section === "cards" ? C.purple : "transparent", color: section === "cards" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">Credit Card</button>
+          <button onClick={() => setSection("banks")} style={{ background: section === "banks" ? C.purple : "transparent", color: section === "banks" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">Bank</button>
         </div>
 
         {section === "categories" && (
@@ -3553,7 +3854,7 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
                   </div>
                   {expanded && (
                     <div className="mt-2.5 pl-11 flex flex-col gap-1.5">
-                      {(cat.subcategories || []).length === 0 && <p className="text-[11px]" style={{ color: C.inkSoft }}>ยังไม่มีหมวดหมู่ย่อย</p>}
+                      {(cat.subcategories || []).length === 0 && <p className="text-[11px]" style={{ color: C.inkSoft }}>No subcategories yet</p>}
                       {(cat.subcategories || []).map((sub) => {
                         const SIcon = resolveIcon(sub.icon);
                         return (
@@ -3565,13 +3866,13 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
                           </div>
                         );
                       })}
-                      <button onClick={() => openNewSubForm(cat.key)} style={{ color: C.purple }} className="text-xs font-bold flex items-center gap-1 mt-1"><Plus size={12} />เพิ่มหมวดย่อย</button>
+                      <button onClick={() => openNewSubForm(cat.key)} style={{ color: C.purple }} className="text-xs font-bold flex items-center gap-1 mt-1"><Plus size={12} />Add subcategory</button>
                     </div>
                   )}
                 </div>
               );
             })}
-            <button onClick={openNewCategoryForm} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-sm font-bold"><Plus size={15} />เพิ่มหมวดหมู่</button>
+            <button onClick={openNewCategoryForm} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-sm font-bold"><Plus size={15} />Add category</button>
           </div>
         )}
 
@@ -3579,15 +3880,15 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
           <div className="flex flex-col gap-2">
             {orphanedCardNames.length > 0 && (
               <div style={{ background: C.yellowSoft }} className="rounded-2xl p-3 mb-1">
-                <p className="text-xs font-bold mb-1" style={{ color: "#7A5B00" }}>พบชื่อบัตรที่ไม่ตรงกับรายการปัจจุบัน</p>
-                <p className="text-[11px] mb-2.5" style={{ color: "#7A5B00" }}>อาจเกิดจากเคยเปลี่ยนชื่อบัตรมาก่อน ทำให้มีรายการซ้ำ — กดรวมเข้ากับบัตรปัจจุบันได้เลย</p>
+                <p className="text-xs font-bold mb-1" style={{ color: "#7A5B00" }}>Found a card name that doesn't match current cards</p>
+                <p className="text-[11px] mb-2.5" style={{ color: "#7A5B00" }}>Possibly from renaming this card before, causing duplicates — you can merge it into the current one</p>
                 {orphanedCardNames.map((o) => (
                   <div key={o.name} className="flex items-center gap-2 mb-1.5 last:mb-0">
-                    <span className="text-xs font-bold flex-1 truncate">"{o.name}"{o.count > 0 ? ` (${o.count} รายการ)` : ""}</span>
+                    <span className="text-xs font-bold flex-1 truncate">"{o.name}"{o.count > 0 ? ` (${o.count} items)` : ""}</span>
                     <select value={mergeTarget} onChange={(e) => setMergeTarget(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 8px", fontSize: 11 }}>
                       {creditCards.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
                     </select>
-                    <button onClick={() => mergeStaleName(mergeTarget, o.name)} style={{ background: C.purple, color: "#fff" }} className="px-2.5 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap">รวมเลย</button>
+                    <button onClick={() => mergeStaleName(mergeTarget, o.name)} style={{ background: C.purple, color: "#fff" }} className="px-2.5 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap">Merge</button>
                   </div>
                 ))}
               </div>
@@ -3600,35 +3901,35 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
                   <div style={{ background: cd.color }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><CardIcon size={15} color="#fff" /></div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-bold truncate">{cd.name}</p>
-                    <p className="text-[11px]" style={{ color: C.inkSoft }}>ตัดยอดวันที่ {cs.cutoffDay} · ครบกำหนดวันที่ {cs.dueDay}</p>
+                    <p className="text-[11px]" style={{ color: C.inkSoft }}>Cutoff day {cs.cutoffDay} · Due day {cs.dueDay}</p>
                   </div>
                   <button onClick={() => openEditCardForm(cd)} style={{ color: C.purple }} className="p-1"><Pencil size={14} /></button>
                   <button onClick={() => deleteCard(cd.name)} style={{ color: creditCards.length <= 1 ? C.graySoft : C.gray }} className="p-1" disabled={creditCards.length <= 1}><Trash2 size={14} /></button>
                 </div>
               );
             })}
-            <button onClick={openNewCardForm} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-sm font-bold"><Plus size={15} />เพิ่มบัตรเครดิต</button>
-            <p className="text-[11px] mt-1" style={{ color: C.inkSoft }}>เลือกไอคอน+สีเป็นสัญลักษณ์แทนได้ (ไม่ใช่โลโก้จริงของธนาคาร) กำหนดวันตัดยอด/ครบกำหนดชำระของแต่ละบัตรได้ตอนเพิ่มหรือแก้ไขบัตร</p>
+            <button onClick={openNewCardForm} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-sm font-bold"><Plus size={15} />Add credit card</button>
+            <p className="text-[11px] mt-1" style={{ color: C.inkSoft }}>Pick an icon+color as a stand-in symbol (not the bank's real logo). Set each card's cutoff/due date when adding or editing it</p>
           </div>
         )}
         {section === "banks" && (
           <div className="flex flex-col gap-2">
             {orphanedBankNames.length > 0 && (
               <div style={{ background: C.yellowSoft }} className="rounded-2xl p-3 mb-1">
-                <p className="text-xs font-bold mb-1" style={{ color: "#7A5B00" }}>พบชื่อธนาคารที่ไม่ตรงกับรายการปัจจุบัน</p>
-                <p className="text-[11px] mb-2.5" style={{ color: "#7A5B00" }}>อาจเกิดจากเคยเปลี่ยนชื่อธนาคารมาก่อน — กดรวมเข้ากับธนาคารปัจจุบันได้เลย</p>
+                <p className="text-xs font-bold mb-1" style={{ color: "#7A5B00" }}>Found a bank name that doesn't match current banks</p>
+                <p className="text-[11px] mb-2.5" style={{ color: "#7A5B00" }}>Possibly from renaming this bank before — you can merge it into the current one</p>
                 {orphanedBankNames.map((o) => (
                   <div key={o.name} className="flex items-center gap-2 mb-1.5 last:mb-0">
-                    <span className="text-xs font-bold flex-1 truncate">"{o.name}"{o.count > 0 ? ` (${o.count} รายการ)` : ""}</span>
+                    <span className="text-xs font-bold flex-1 truncate">"{o.name}"{o.count > 0 ? ` (${o.count} items)` : ""}</span>
                     <select value={bankMergeTarget} onChange={(e) => setBankMergeTarget(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 8px", fontSize: 11 }}>
                       {banks.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
                     </select>
-                    <button onClick={() => mergeStaleBankName(bankMergeTarget, o.name)} style={{ background: C.purple, color: "#fff" }} className="px-2.5 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap">รวมเลย</button>
+                    <button onClick={() => mergeStaleBankName(bankMergeTarget, o.name)} style={{ background: C.purple, color: "#fff" }} className="px-2.5 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap">Merge</button>
                   </div>
                 ))}
               </div>
             )}
-            {banks.length === 0 && <EmptyNote text="ยังไม่มีธนาคาร — เพิ่มเพื่อเริ่มบันทึกยอดคงเหลือและเลือกตอนโอนเงินได้" />}
+            {banks.length === 0 && <EmptyNote text="No banks yet — add one to start tracking balances and selecting it for transfers" />}
             {banks.map((b) => {
               const BankIcon = resolveIcon(b.icon);
               const balance = computeBankBalance(transactions, bankBalances, b.name);
@@ -3637,15 +3938,15 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
                   <div style={{ background: b.color }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><BankIcon size={15} color="#fff" /></div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-bold truncate">{b.name}</p>
-                    <p className="text-[11px]" style={{ color: C.inkSoft }}>ยอดคงเหลือ {fmtTHB(balance)}</p>
+                    <p className="text-[11px]" style={{ color: C.inkSoft }}>Balance {fmtTHB(balance)}</p>
                   </div>
                   <button onClick={() => openEditBankForm(b)} style={{ color: C.purple }} className="p-1"><Pencil size={14} /></button>
                   <button onClick={() => deleteBank(b.name)} style={{ color: C.gray }} className="p-1"><Trash2 size={14} /></button>
                 </div>
               );
             })}
-            <button onClick={openNewBankForm} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-sm font-bold"><Plus size={15} />เพิ่มธนาคาร</button>
-            <p className="text-[11px] mt-1" style={{ color: C.inkSoft }}>ตั้งยอดคงเหลือเริ่มต้นได้ที่หน้า "ออม & ลงทุน" รายการโอนเงินใหม่หลังจากนี้จะตัด/บวกยอดให้อัตโนมัติ รายการเก่าก่อนเพิ่มธนาคารจะไม่ถูกนับย้อนหลัง</p>
+            <button onClick={openNewBankForm} style={{ background: C.purpleSoft, color: C.purple }} className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl text-sm font-bold"><Plus size={15} />Add bank</button>
+            <p className="text-[11px] mt-1" style={{ color: C.inkSoft }}>Set the starting balance on the "Saving & Investing" page — new transfer items after this will add/subtract automatically. Old items from before the bank was added won't be counted retroactively</p>
           </div>
         )}
       </div>
@@ -3653,9 +3954,9 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
       {form && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(38,38,56,0.55)", zIndex: 410, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setForm(null)}>
           <div style={{ background: C.card, borderRadius: 24, padding: 20, maxWidth: 340, width: "100%", maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
-            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">{form.mode.startsWith("new") ? "เพิ่มรายการ" : "แก้ไขรายการ"}</p>
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ชื่อ" style={{ ...inputStyle, marginBottom: 14 }} autoFocus />
-            <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>ไอคอน</p>
+            <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3">{form.mode.startsWith("new") ? "Add item" : "Edit item"}</p>
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Name" style={{ ...inputStyle, marginBottom: 14 }} autoFocus />
+            <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>Icon</p>
             <div className="grid grid-cols-6 gap-2 mb-4 max-h-32 overflow-y-auto">
               {ICON_NAMES.map((name) => {
                 const IconComp = ICON_LIBRARY[name];
@@ -3667,7 +3968,7 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
                 );
               })}
             </div>
-            <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>สี</p>
+            <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>Color</p>
             <div className="flex flex-wrap gap-2 mb-5">
               {CATEGORY_COLOR_PALETTE.map((c) => (
                 <button key={c} onClick={() => setForm({ ...form, color: c })} style={{ background: c, width: 26, height: 26, borderRadius: 26, border: form.color === c ? `3px solid ${C.ink}` : "3px solid transparent" }} />
@@ -3676,32 +3977,32 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
             {(form.mode === "newCard" || form.mode === "editCard") && (
               <div className="grid grid-cols-2 gap-3 mb-5">
                 <div>
-                  <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>วันตัดยอด</p>
+                  <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>Cutoff day</p>
                   <input type="number" min="1" max="31" value={form.cutoffDay} onChange={(e) => setForm({ ...form, cutoffDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) })} style={inputStyle} />
                 </div>
                 <div>
-                  <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>วันครบกำหนดชำระ</p>
+                  <p className="text-xs font-bold mb-1.5" style={{ color: C.inkSoft }}>Due date</p>
                   <input type="number" min="1" max="31" value={form.dueDay} onChange={(e) => setForm({ ...form, dueDay: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) })} style={inputStyle} />
                 </div>
               </div>
             )}
             {form.mode === "editCard" && (
               <details className="mb-5">
-                <summary className="text-xs font-bold cursor-pointer" style={{ color: C.inkSoft }}>ขั้นสูง: รวมรายการเก่าที่ค้างจากชื่อบัตรอื่น</summary>
-                <p className="text-[11px] mt-1.5 mb-2" style={{ color: C.inkSoft }}>ถ้าเคยเปลี่ยนชื่อบัตรใบนี้มาก่อน แล้วยังเห็นรายการซ้ำในหน้า Debts ที่ใช้ชื่อเดิม พิมพ์ชื่อเดิมตรงนี้เพื่อรวมเข้าด้วยกัน</p>
-                <input value={form.mergeFrom} onChange={(e) => setForm({ ...form, mergeFrom: e.target.value })} placeholder="ชื่อเดิมที่ต้องการรวมเข้ามา" style={inputStyle} />
+                <summary className="text-xs font-bold cursor-pointer" style={{ color: C.inkSoft }}>Advanced: merge old items stuck under another card name</summary>
+                <p className="text-[11px] mt-1.5 mb-2" style={{ color: C.inkSoft }}>If you've renamed this card before and still see duplicates on the Debts page under the old name, type the old name here to merge them</p>
+                <input value={form.mergeFrom} onChange={(e) => setForm({ ...form, mergeFrom: e.target.value })} placeholder="Old name to merge in" style={inputStyle} />
               </details>
             )}
             {form.mode === "editBank" && (
               <details className="mb-5">
-                <summary className="text-xs font-bold cursor-pointer" style={{ color: C.inkSoft }}>ขั้นสูง: รวมรายการเก่าที่ค้างจากชื่อธนาคารอื่น</summary>
-                <p className="text-[11px] mt-1.5 mb-2" style={{ color: C.inkSoft }}>ถ้าเคยเปลี่ยนชื่อธนาคารนี้มาก่อน พิมพ์ชื่อเดิมตรงนี้เพื่อรวมยอด/รายการเข้าด้วยกัน</p>
-                <input value={form.mergeFrom} onChange={(e) => setForm({ ...form, mergeFrom: e.target.value })} placeholder="ชื่อเดิมที่ต้องการรวมเข้ามา" style={inputStyle} />
+                <summary className="text-xs font-bold cursor-pointer" style={{ color: C.inkSoft }}>Advanced: merge old items stuck under another bank name</summary>
+                <p className="text-[11px] mt-1.5 mb-2" style={{ color: C.inkSoft }}>If you've renamed this bank before, type the old name here to merge balances/items together</p>
+                <input value={form.mergeFrom} onChange={(e) => setForm({ ...form, mergeFrom: e.target.value })} placeholder="Old name to merge in" style={inputStyle} />
               </details>
             )}
             <div className="flex gap-2">
-              <button onClick={() => setForm(null)} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2.5 rounded-full text-sm font-bold">ยกเลิก</button>
-              <button onClick={saveForm} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex-1 py-2.5 rounded-full text-sm font-bold">บันทึก</button>
+              <button onClick={() => setForm(null)} style={{ background: C.graySoft, color: C.inkSoft }} className="flex-1 py-2.5 rounded-full text-sm font-bold">Cancel</button>
+              <button onClick={saveForm} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex-1 py-2.5 rounded-full text-sm font-bold">Save</button>
             </div>
           </div>
         </div>
