@@ -719,7 +719,7 @@ export default function FinanceTracker({ syncStatus, syncUsername, syncError, on
         const existingLineItems = next.find((d) => d.id === id)?.lineItems || [];
         const lineItemsTotal = activeLineItemsTotal(existingLineItems, candidateYm);
         const totalAmt = autoAmt + lineItemsTotal;
-        const label = `Credit Card ${cardName}`;
+        const label = cardName;
         const idx = next.findIndex((d) => d.id === id);
         if (idx === -1) {
           next.push({ id, name: label, amount: totalAmt, dueDate: candidateDate, recurring: true, paid: false, auto: true, card: cardName, lineItems: [] });
@@ -1586,7 +1586,7 @@ function TransactionsTab({ transactions, setTransactions, budgets = {}, setTab, 
         </div>
 
         <div className="grid grid-cols-2 gap-3 mb-3.5">
-          <Field label="Amount (THB)"><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+          <Field label="Amount (THB)"><MoneyInput value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
           <Field label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} /></Field>
         </div>
 
@@ -1761,6 +1761,35 @@ const inputStyle = {
   padding: "8px 12px", fontSize: 14, color: C.ink, width: "100%", fontFamily: "'Prompt', sans-serif", fontWeight: 700,
 };
 
+// Money amounts need thousands separators as you type/view them, but a
+// native <input type="number"> can't display commas at all — so this is a
+// text input underneath that formats for display while exposing the same
+// value/onChange or defaultValue/onBlur shape every call site already uses.
+function fmtInputNum(v) {
+  if (v === "" || v == null) return "";
+  const s = String(v);
+  const neg = s.startsWith("-") ? "-" : "";
+  const parts = s.replace("-", "").split(".");
+  const withCommas = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return neg + (parts.length > 1 ? `${withCommas}.${parts[1]}` : withCommas);
+}
+function parseInputNum(v) { return v.replace(/,/g, ""); }
+function MoneyInput({ value, defaultValue, onChange, onBlur, style, placeholder, ...rest }) {
+  const initial = value !== undefined ? value : defaultValue;
+  const [display, setDisplay] = useState(fmtInputNum(initial));
+  useEffect(() => { if (value !== undefined) setDisplay(fmtInputNum(value)); }, [value]);
+  function handleChange(e) {
+    const raw = parseInputNum(e.target.value);
+    if (!/^-?\d*\.?\d*$/.test(raw)) return;
+    setDisplay(fmtInputNum(raw));
+    if (onChange) onChange({ target: { value: raw } });
+  }
+  function handleBlur(e) {
+    if (onBlur) onBlur({ target: { value: parseInputNum(display) } });
+  }
+  return <input type="text" inputMode="decimal" value={display} onChange={handleChange} onBlur={handleBlur} placeholder={placeholder} style={style} {...rest} />;
+}
+
 /* ---------------------------------------------------------------- */
 function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, setHoldings, banks, bankBalances, setBankBalances, transactions, setTransactions, cashBalance, setCashBalance, setDeletedSavingsIds, setDeletedHoldingIds, setDeletedInvestItemIds, showToast, expenseCategories, setExpenseCategories, creditCards }) {
   const [subTab, setSubTab] = useState("banks");
@@ -1900,7 +1929,7 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
         if (idx === -1) {
           // Shouldn't normally happen (the sync effect seeds one entry per
           // configured card), but handle it defensively.
-          return [...prev, { id: cardDebtId, name: `Credit Card ${selectedCard}`, amount: 0, dueDate: todayStr(), recurring: true, paid: false, auto: true, card: selectedCard, lineItems: [lineItem] }];
+          return [...prev, { id: cardDebtId, name: selectedCard, amount: 0, dueDate: todayStr(), recurring: true, paid: false, auto: true, card: selectedCard, lineItems: [lineItem] }];
         }
         const nextLineItems = [...(prev[idx].lineItems || []), lineItem];
         const autoAmt = computeCardOwed(transactions, cardOwedBaseline, cardSettings, selectedCard, currentCycleYm);
@@ -2231,7 +2260,7 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
               </select>
             </Field>
           )}
-          <Field label="Amount (THB)"><input type="number" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+          <Field label="Amount (THB)"><MoneyInput value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
           {debtType !== "credit" && (
             <Field label="Due Date"><input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} style={inputStyle} /></Field>
           )}
@@ -2285,17 +2314,17 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
                       </p>
                       <p className="text-xs truncate" style={{ color: C.inkSoft }}>{isCardDebt ? `Due ${parseLocalDate(d.dueDate).toLocaleDateString("en-US", { day: "numeric", month: "short" })}` : `${d.projected ? "Expected due" : "Due"} ${thDate(d.dueDate)}`}</p>
                     </div>
-                    <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-bold whitespace-nowrap px-2.5 py-1 rounded-full shrink-0">{statusText}</span>
+                    <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-normal whitespace-nowrap px-2.5 py-1 rounded-full shrink-0">{statusText}</span>
                     {isCardDebt ? (
-                      <input type="number" min="0" defaultValue={d.amount} key={d.id + "-amt-" + d.amount}
+                      <MoneyInput defaultValue={d.amount} key={d.id + "-amt-" + d.amount}
                         onBlur={(e) => updateCardTotal(d, e.target.value)}
-                        style={{ ...inputStyle, width: 92, padding: "6px 8px", fontFamily: "'Prompt', sans-serif", fontWeight: 700, textAlign: "right" }} />
+                        style={{ ...inputStyle, width: 80, padding: "6px 6px", fontFamily: "'Prompt', sans-serif", fontWeight: 700, textAlign: "right" }} />
                     ) : d.projected ? (
-                      <p style={{ fontFamily: "'Prompt', sans-serif", width: 92, textAlign: "right" }} className="text-sm font-bold shrink-0">{fmtTHB(d.amount)}</p>
+                      <p style={{ fontFamily: "'Prompt', sans-serif", width: 80, textAlign: "right" }} className="text-sm font-bold shrink-0">{fmtTHB(d.amount)}</p>
                     ) : (
-                      <input type="number" min="0" defaultValue={d.amount} key={d.id + "-amt-" + d.amount}
+                      <MoneyInput defaultValue={d.amount} key={d.id + "-amt-" + d.amount}
                         onBlur={(e) => updateAmount(d.id, e.target.value)}
-                        style={{ ...inputStyle, width: 92, padding: "6px 8px", fontFamily: "'Prompt', sans-serif", fontWeight: 700, textAlign: "right" }} />
+                        style={{ ...inputStyle, width: 80, padding: "6px 6px", fontFamily: "'Prompt', sans-serif", fontWeight: 700, textAlign: "right" }} />
                     )}
                     {isCardDebt ? (
                       <button onClick={() => setExpandedCardId(expanded ? null : d.id)} style={{ color: C.inkSoft }} className="p-1 shrink-0">
@@ -2306,7 +2335,7 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
                     )}
                   </div>
                   {isCardDebt && expanded && (
-                    <div style={{ background: C.bg }} className="px-3.5 py-3 flex flex-col gap-2">
+                    <div style={{ background: C.card }} className="px-3.5 py-3 flex flex-col gap-2">
                       <div className="flex items-center justify-between text-xs">
                         <span style={{ color: C.inkSoft }}>Card spending (unpaid)</span>
                         <span style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold">{fmtTHB(computeCardOwed(transactions, cardOwedBaseline, cardSettings, d.card, d.dueDate.slice(0, 7)))}</span>
@@ -2371,7 +2400,7 @@ function BudgetsTab({ budgets, setBudgets, monthSpend, expenseCategories }) {
               <div className="flex items-center gap-3 mb-2">
                 <div style={{ background: color }} className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"><Icon size={15} color="#fff" /></div>
                 <p className="text-sm font-bold flex-1">{c.label}</p>
-                <input type="number" min="0" placeholder="Unset" defaultValue={limit ?? ""} onBlur={(e) => setLimit(c.key, e.target.value)} style={{ ...inputStyle, width: 110 }} />
+                <MoneyInput placeholder="Unset" defaultValue={limit ?? ""} onBlur={(e) => setLimit(c.key, e.target.value)} style={{ ...inputStyle, width: 110 }} />
               </div>
               {limit ? (
                 <div>
@@ -2577,7 +2606,7 @@ function AllocationRow({ label, color, icon: Icon, alloc, onChange, amount }) {
           <button onClick={() => onChange({ ...alloc, mode: "percent" })} style={{ background: alloc.mode === "percent" ? color : "transparent", color: alloc.mode === "percent" ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1"><Percent size={11} />%</button>
           <button onClick={() => onChange({ ...alloc, mode: "fixed" })} style={{ background: alloc.mode === "fixed" ? color : "transparent", color: alloc.mode === "fixed" ? "#fff" : C.inkSoft }} className="px-2.5 py-1 rounded-full text-xs font-bold">฿</button>
         </div>
-        <input type="number" min="0" value={alloc.value} onChange={(e) => onChange({ ...alloc, value: parseFloat(e.target.value) || 0 })} style={{ ...inputStyle, width: 100 }} />
+        <MoneyInput value={alloc.value} onChange={(e) => onChange({ ...alloc, value: parseFloat(e.target.value) || 0 })} style={{ ...inputStyle, width: 100 }} />
       </div>
     </div>
   );
@@ -2647,7 +2676,7 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
                     {overridden && <span style={{ color }} className="font-bold">· edit this month only</span>}
                   </p>
                 </div>
-                <input type="number" min="0" defaultValue={eff} key={ym + item.id + eff}
+                <MoneyInput defaultValue={eff} key={ym + item.id + eff}
                   onBlur={(e) => updateAmount(item, e.target.value)} style={{ ...inputStyle, width: 100 }} />
                 {overridden && (
                   <button onClick={() => resetOverride(item)} title="Reset to default" style={{ color: C.inkSoft }} className="p-1"><RotateCcw size={13} /></button>
@@ -2675,7 +2704,7 @@ function PlanSection({ title, color, icon: Icon, items, setItems, overrides, set
         </div>
         <div className="w-28">
           <label className="text-xs font-bold block mb-1" style={{ color: C.inkSoft }}>Amount</label>
-          <input type="number" min="0" value={amount} onChange={(e) => { setAmount(e.target.value); setError(""); }} placeholder="0.00" style={inputStyle} />
+          <MoneyInput value={amount} onChange={(e) => { setAmount(e.target.value); setError(""); }} placeholder="0.00" style={inputStyle} />
         </div>
         <button onClick={() => setRecurring((r) => !r)} style={{ background: recurring ? color : C.graySoft, color: recurring ? "#fff" : C.inkSoft }} className="px-3 py-2 rounded-full text-xs font-bold whitespace-nowrap">
           {recurring ? "Monthly" : "This month only"}
@@ -2985,7 +3014,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
                     <span style={{ background: chipBg, color: chipColor }} className="text-[11px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap">{st.text}</span>
                   </div>
                   <div className="flex items-center gap-2 ml-11">
-                    <input type="number" min="0" defaultValue={item.value} key={item.id + item.mode}
+                    <MoneyInput defaultValue={item.value} key={item.id + item.mode}
                       onBlur={(e) => updateItem(item.id, { value: parseFloat(e.target.value) || 0 })} style={{ ...inputStyle, width: 100 }} />
                     <span style={{ fontFamily: "'Prompt', sans-serif", color: C.purple }} className="text-sm font-bold flex-1 text-right">{fmtTHB(amt)}</span>
                     {item.recurring && !item.executed && (
@@ -3027,7 +3056,7 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
           </Field>
         </div>
         <Field label="Investment amount (THB)">
-          <input type="number" min="0" value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. 2000" style={{ ...inputStyle, width: 160 }} />
+          <MoneyInput value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. 2000" style={{ ...inputStyle, width: 160 }} />
         </Field>
         <div className="h-3" />
         <Field label="Investment schedule">
@@ -3056,12 +3085,11 @@ function InvestmentPlanPanel({ investPlan, setInvestPlan, setSavings, savings, s
             ) : (
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, width: 150 }} />
             )}
-            <input type="time" value={time} onChange={(e) => setTime(e.target.value)} style={{ ...inputStyle, width: 110 }} />
           </div>
           {scheduleType === "monthly" && scheduleMode === "interval" && (
-            <div className="flex flex-wrap gap-1.5 mt-2">
+            <div className="flex gap-1.5 mt-2 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
               {[1, 2, 3, 6, 12].map((n) => (
-                <button key={n} onClick={() => setIntervalMonths(n)} style={{ background: intervalMonths === n ? C.purpleSoft : C.graySoft, color: intervalMonths === n ? C.purpleDeep : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold">{freqLabel(n)}</button>
+                <button key={n} onClick={() => setIntervalMonths(n)} style={{ background: intervalMonths === n ? C.purpleSoft : C.graySoft, color: intervalMonths === n ? C.purpleDeep : C.inkSoft }} className="px-2.5 py-1 rounded-full text-[11px] font-bold shrink-0 whitespace-nowrap">{freqLabel(n)}</button>
               ))}
             </div>
           )}
@@ -3160,7 +3188,7 @@ function InvestMonthlyPlanner({ investPlan, setInvestPlan }) {
                     <Tag size={10} />{item.category}{overridden && <span style={{ color: C.purple }} className="font-bold">· set this month only</span>}
                   </p>
                 </div>
-                <input type="number" min="0" defaultValue={amt} key={ym + item.id + amt}
+                <MoneyInput defaultValue={amt} key={ym + item.id + amt}
                   onBlur={(e) => setOverride(item.id, e.target.value)} style={{ ...inputStyle, width: 100 }} />
                 {overridden && (
                   <button onClick={() => resetOverride(item.id)} title="Reset to default" style={{ color: C.inkSoft }} className="p-1"><RotateCcw size={13} /></button>
@@ -3369,11 +3397,11 @@ function PortfolioHoldingsPanel({ holdings, setHoldings, setDeletedHoldingIds, s
                     </span>
                   </div>
                   <div className="flex items-center gap-3 ml-11 text-xs flex-nowrap overflow-x-auto" style={{ color: C.inkSoft, scrollbarWidth: "none" }}>
-                    <span className="whitespace-nowrap shrink-0">Invested: <b style={{ color: C.ink, fontFamily: "'Prompt', sans-serif" }}>{fmtTHB(h.invested)}</b></span>
+                    <span className="whitespace-nowrap shrink-0">Invested: <b style={{ color: C.ink, fontFamily: "'Prompt', sans-serif", fontSize: 13 }}>{fmtTHB(h.invested)}</b></span>
                     <span className="flex items-center gap-1 shrink-0">
                       <span className="whitespace-nowrap">Current value:</span>
-                      <input type="number" min="0" defaultValue={h.current} key={h.id + h.current}
-                        onBlur={(e) => updateCurrent(h.id, e.target.value)} style={{ ...inputStyle, width: 90, padding: "4px 8px" }} />
+                      <MoneyInput defaultValue={h.current} key={h.id + h.current}
+                        onBlur={(e) => updateCurrent(h.id, e.target.value)} style={{ ...inputStyle, width: 90, padding: "4px 8px", fontSize: 13 }} />
                     </span>
                     <button onClick={() => remove(h.id)} style={{ color: C.gray }} className="p-1 ml-auto shrink-0"><Trash2 size={13} /></button>
                   </div>
@@ -3392,8 +3420,8 @@ function PortfolioHoldingsPanel({ holdings, setHoldings, setDeletedHoldingIds, s
             <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Select or type your own" list="holding-cat-presets" style={inputStyle} />
             <datalist id="holding-cat-presets">{INVEST_CATEGORY_PRESETS.map((c) => <option key={c} value={c} />)}</datalist>
           </Field>
-          <Field label="Investment (cost)"><input type="number" min="0" value={invested} onChange={(e) => setInvested(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
-          <Field label="Current value (blank = same as cost)"><input type="number" min="0" value={current} onChange={(e) => setCurrent(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+          <Field label="Investment (cost)"><MoneyInput value={invested} onChange={(e) => setInvested(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+          <Field label="Current value (blank = same as cost)"><MoneyInput value={current} onChange={(e) => setCurrent(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
         </div>
         <button onClick={add} style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleDeep})`, color: "#fff" }} className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold shadow-sm"><Plus size={16} /> Add item</button>
         <p className="text-[11px] mt-2" style={{ color: C.inkSoft }}>Use this to log investments you already held before using the app, then update the "current value" periodically to track returns — separate from the totals on the "Saving-Investing" and "Investment Plan" tabs</p>
@@ -3505,9 +3533,9 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
           <p style={{ fontFamily: "'Prompt', sans-serif" }} className="font-bold mb-3 flex items-center gap-2"><Home size={16} color={C.brown} />Set up home loan</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
             <Field label="Item name"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Krungsri home loan" style={inputStyle} /></Field>
-            <Field label="Starting principal (THB)"><input type="number" min="0" value={principal} onChange={(e) => setPrincipal(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+            <Field label="Starting principal (THB)"><MoneyInput value={principal} onChange={(e) => setPrincipal(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
             <Field label="Month payments start"><input type="month" value={startMonth} onChange={(e) => setStartMonth(e.target.value)} style={inputStyle} /></Field>
-            <Field label="Monthly payment (THB)"><input type="number" min="0" value={payment} onChange={(e) => setPayment(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
+            <Field label="Monthly payment (THB)"><MoneyInput value={payment} onChange={(e) => setPayment(e.target.value)} placeholder="0.00" style={inputStyle} /></Field>
             <Field label="Due date"><input type="number" min="1" max="31" value={dueDay} onChange={(e) => setDueDay(e.target.value)} style={inputStyle} /></Field>
             <Field label="Starting interest rate (% p.a.)"><input type="number" min="0" step="0.01" value={initialRate} onChange={(e) => setInitialRate(e.target.value)} placeholder="e.g. 6.5" style={inputStyle} /></Field>
           </div>
@@ -3628,7 +3656,7 @@ function HomePlanningTab({ homeLoan, setHomeLoan, planOverrides, setPlanOverride
                       </td>
                       <td className="py-2 pr-2 font-bold whitespace-nowrap">{monthLabel(r.ym)}{isCurrent ? " •" : ""}</td>
                       <td className="text-right px-2 whitespace-nowrap">
-                        <input type="number" min="0" defaultValue={r.payment} key={r.ym + "-pay-" + r.payment}
+                        <MoneyInput defaultValue={r.payment} key={r.ym + "-pay-" + r.payment}
                           onBlur={(e) => updateActualPayment(r.ym, e.target.value)}
                           style={{ ...inputStyle, width: 90, padding: "4px 8px", fontFamily: "'Prompt', sans-serif", textAlign: "right" }} />
                       </td>
@@ -3832,10 +3860,10 @@ function SettingsPage({ expenseCategories, setExpenseCategories, creditCards, se
         </div>
         <p className="text-xs mb-4" style={{ color: C.inkSoft }}>These categories and credit cards belong only to your account — other users aren't affected</p>
 
-        <div className="flex rounded-full overflow-hidden p-1 mb-4 w-fit" style={{ background: C.graySoft }}>
-          <button onClick={() => setSection("categories")} style={{ background: section === "categories" ? C.purple : "transparent", color: section === "categories" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">Category</button>
-          <button onClick={() => setSection("cards")} style={{ background: section === "cards" ? C.purple : "transparent", color: section === "cards" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">Credit Card</button>
-          <button onClick={() => setSection("banks")} style={{ background: section === "banks" ? C.purple : "transparent", color: section === "banks" ? "#fff" : C.inkSoft }} className="px-4 py-1.5 text-sm font-bold rounded-full">Bank</button>
+        <div className="flex rounded-full overflow-hidden p-1 mb-4 w-full" style={{ background: C.graySoft }}>
+          <button onClick={() => setSection("categories")} style={{ background: section === "categories" ? C.purple : "transparent", color: section === "categories" ? "#fff" : C.inkSoft }} className="flex-1 px-4 py-1.5 text-sm font-bold rounded-full">Category</button>
+          <button onClick={() => setSection("cards")} style={{ background: section === "cards" ? C.purple : "transparent", color: section === "cards" ? "#fff" : C.inkSoft }} className="flex-1 px-4 py-1.5 text-sm font-bold rounded-full">Credit Card</button>
+          <button onClick={() => setSection("banks")} style={{ background: section === "banks" ? C.purple : "transparent", color: section === "banks" ? "#fff" : C.inkSoft }} className="flex-1 px-4 py-1.5 text-sm font-bold rounded-full">Bank</button>
         </div>
 
         {section === "categories" && (
