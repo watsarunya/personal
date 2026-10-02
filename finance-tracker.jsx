@@ -158,6 +158,13 @@ function monthsBetweenYm(fromYm, toYm) {
 // the cycle that's already in progress.
 function lineItemActiveFor(li, cycleYm) {
   if (!li.startYm) return true; // pre-existing item from before installment tracking existed
+  // Once this cycle's installment has actually been paid (via paying the
+  // parent card), it must stop counting until the NEXT cycle arrives —
+  // otherwise it keeps re-adding itself immediately after payment, since
+  // the schedule alone (start + elapsed) can't tell "paid" from "not yet
+  // due". Without this, the card's total — and its "Done" status — could
+  // never reach zero while any recurring item was attached.
+  if (li.lastPaidYm === cycleYm) return false;
   const elapsed = monthsBetweenYm(li.startYm, cycleYm);
   if (elapsed < 0) return false;
   if (li.totalInstallments == null) return true;
@@ -297,6 +304,12 @@ function buildAmortizationSchedule(loan, planOverrides) {
 function fmtTHB(n) {
   const v = Number(n) || 0;
   return "฿" + v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+// Savings page balances always show exactly 2 decimal places (unlike
+// fmtTHB elsewhere, which drops trailing .00 for whole numbers).
+function fmtTHB2(n) {
+  const v = Number(n) || 0;
+  return "฿" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 function todayStr() { return toLocalDateStr(new Date()); }
 // Data retention: transactions older than 6 months are permanently purged
@@ -1821,12 +1834,12 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
         <div style={{ background: `linear-gradient(135deg, ${C.teal}, #22A184)` }} className="rounded-2xl p-4 text-white shadow-sm">
           <PiggyBank size={20} className="mb-2" />
           <p className="text-xs font-semibold opacity-90">Total Savings</p>
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalSaving)}</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold">{fmtTHB2(totalSaving)}</p>
         </div>
         <div style={{ background: `linear-gradient(135deg, ${C.blue}, #2E93C4)` }} className="rounded-2xl p-4 text-white shadow-sm">
           <TrendingUp size={20} className="mb-2" />
           <p className="text-xs font-semibold opacity-90">Total Invested</p>
-          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold">{fmtTHB(totalInvest)}</p>
+          <p style={{ fontFamily: "'Prompt', sans-serif" }} className="text-lg font-bold">{fmtTHB2(totalInvest)}</p>
         </div>
       </div>
 
@@ -1844,9 +1857,8 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
               <p className="text-sm font-bold truncate">Cash</p>
               <p className="text-[11px]" style={{ color: C.inkSoft }}>Current balance</p>
             </div>
-            <input
-              type="number"
-              defaultValue={computeCashBalance(transactions, cashBalance)}
+            <MoneyInput
+              defaultValue={computeCashBalance(transactions, cashBalance).toFixed(2)}
               key={"cash-" + computeCashBalance(transactions, cashBalance)}
               onBlur={(e) => {
                 const typed = parseFloat(e.target.value);
@@ -1870,9 +1882,8 @@ function SavingsTab({ savings, setSavings, investPlan, setInvestPlan, holdings, 
                       <p className="text-sm font-bold truncate">{b.name}</p>
                       <p className="text-[11px]" style={{ color: C.inkSoft }}>Current balance</p>
                     </div>
-                    <input
-                      type="number"
-                      defaultValue={balance}
+                    <MoneyInput
+                      defaultValue={balance.toFixed(2)}
                       key={b.name + "-" + balance}
                       onBlur={(e) => {
                         const typed = parseFloat(e.target.value);
@@ -1992,15 +2003,27 @@ function DebtsTab({ debts, setDebts, creditCards, banks = [], setTransactions, s
   // them — it just cleans up any that have fully finished their run.
   function payCardDebt(d, paymentInfo) {
     const cycleYm = d.dueDate.slice(0, 7);
-    const autoAmt = computeCardOwed(transactions, cardOwedBaseline, cardSettings, d.card, cycleYm);
-    const total = autoAmt + activeLineItemsTotal(d.lineItems, cycleYm);
+    // Trust the displayed amount (d.amount) as what's actually being paid —
+    // it already reflects any manual correction via updateCardTotal, and
+    // the transaction logged should always match what's shown, not a
+    // silently-recomputed figure that could disagree with it.
+    const total = d.amount;
     if (total <= 0) return;
     logPaymentTransaction(d, paymentInfo, total);
-    // Advance the baseline only by what was actually billed this cycle
-    // (transactions up to the cutoff) — not the full all-time total, which
-    // would incorrectly also mark not-yet-billed transactions as paid.
-    setCardOwedBaseline((prev) => ({ ...prev, [d.card]: (prev[d.card] || 0) + cardBilledTotal(transactions, cardSettings, d.card, cycleYm) }));
-    setDebts((prev) => prev.map((x) => (x.id === d.id ? { ...x, lineItems: (x.lineItems || []).filter((li) => li.totalInstallments == null || monthsBetweenYm(li.startYm, cycleYm) < li.totalInstallments) } : x)));
+    // Back-solve the baseline absolutely (same formula updateCardTotal
+    // uses) so the auto portion resets to 0 for this cycle — NOT additive
+    // on top of whatever baseline already exists. Additive double-counts
+    // any prior manual edit (which already moved the baseline once) and
+    // leaves it permanently inflated, under-counting future real spending.
+    const billedTotal = cardBilledTotal(transactions, cardSettings, d.card, cycleYm);
+    setCardOwedBaseline((prev) => ({ ...prev, [d.card]: billedTotal }));
+    setDebts((prev) => prev.map((x) => {
+      if (x.id !== d.id) return x;
+      const nextLineItems = (x.lineItems || [])
+        .map((li) => (lineItemActiveFor(li, cycleYm) ? { ...li, lastPaidYm: cycleYm } : li))
+        .filter((li) => li.totalInstallments == null || monthsBetweenYm(li.startYm, cycleYm) < li.totalInstallments);
+      return { ...x, lineItems: nextLineItems };
+    }));
     showToast("Payment saved ✓");
   }
   function togglePaid(id, paymentInfo) {
